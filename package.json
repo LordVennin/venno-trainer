@@ -1,7 +1,7 @@
 {
   "name": "venno-trainer",
-  "version": "0.1.0",
-  "description": "Personal multi-model LoRA training UI (Anima via sd-scripts, MOSS-Image via ai-toolkit)",
+  "version": "0.2.0",
+  "description": "Personal LoRA trainer with a web UI for Anima and MOSS-Image (one Python environment)",
   "main": "server.js",
   "private": true,
   "scripts": {
@@ -12,9 +12,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@iarna/toml": "^2.2.5",
     "express": "^4.21.2",
-    "js-yaml": "^4.1.0",
     "ws": "^8.18.0"
   }
 }

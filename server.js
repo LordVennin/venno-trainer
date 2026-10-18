@@ -1,6 +1,6 @@
-// Venno Trainer: one UI for several LoRA trainers.
-// Jobs live in ./jobs/<name>/job.json; on Train the job is translated into the
-// selected backend's config files and the backend's script is launched.
+// Venno Trainer: web UI for the bundled LoRA trainer (trainer/venno).
+// Jobs live in ./jobs/<name>/job.json; on Train the job is written to
+// jobs/<name>/run.json and `python -m venno.train run.json` is launched.
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
@@ -9,8 +9,8 @@ const { spawn, execFile } = require("child_process");
 const WebSocket = require("ws");
 
 const S = require("./public/js/schema");
-const { BACKENDS, backendFor } = require("./lib/backends");
-const { scanFolder, listSubfolders, effectiveImages, IMAGE_EXTS } = require("./lib/datasets");
+const native = require("./lib/native");
+const { scanFolder, listSubfolders, IMAGE_EXTS } = require("./lib/datasets");
 const { Runner, resolvePython, launchScript } = require("./lib/runner");
 
 const args = process.argv.slice(2);
@@ -43,7 +43,9 @@ function defaultSettings() {
     models[id] = Object.fromEntries(Object.keys(m.paths).map((k) => [k, ""]));
   }
   return {
-    backends: { anima: { root: "", python: "" }, aitk: { root: "", python: "" } },
+    python: "", // venv folder or python executable; blank = ./venv
+    cache_dir: "", // blank = ./cache
+    models_dir: "", // downloads; blank = ./models
     models,
     hf_token: "",
     theme: "github-dark",
@@ -177,24 +179,21 @@ app.post("/api/jobs/:name/clone", h((req, res) => {
   res.json({ name: newName });
 }));
 
-// Translate a job into backend files without launching (used by Preview and Train).
 function buildForJob(name, job) {
   const settings = getSettings();
-  const backend = backendFor(job);
-  const ctx = { jobDir: jobDir(name), settings };
-  if (S.backendOf(job) === "aitk" && job.training.duration_unit === "epochs") {
-    ctx.effectiveImages = effectiveImages(job);
-  }
-  return { settings, backend, result: backend.build(job, ctx) };
+  return { settings, result: native.buildRun(job, settings, jobDir(name)) };
+}
+
+function pythonFor(settings) {
+  return resolvePython(settings.python, native.REPO_ROOT);
 }
 
 app.post("/api/jobs/:name/preview", h((req, res) => {
   const job = S.normalizeJob(req.body.job || readJob(req.params.name));
   const { result } = buildForJob(req.params.name, job);
   res.json({
-    files: result.files.map((f) => ({ name: path.basename(f.path), path: f.path, content: f.content })),
+    files: [{ name: "run.json", path: result.runPath, content: JSON.stringify(result.run, null, 2) }],
     command: { cwd: result.cwd, args: result.args, env: result.env },
-    steps: result.steps,
     issues: S.validateJob(job),
   });
 }));
@@ -203,23 +202,19 @@ app.post("/api/jobs/:name/train/start", h((req, res) => {
   const name = sanitizeName(req.params.name);
   if (runner.isRunning(name)) return res.status(400).json({ error: "Job already running" });
   const job = readJob(name);
-
-  const errors = S.validateJob(job).filter((i) => i.level === "error").map((i) => i.msg);
   const settings = getSettings();
-  const backendId = S.backendOf(job);
-  errors.push(...BACKENDS[backendId].checkSettings(settings));
+  const errors = S.validateJob(job).filter((i) => i.level === "error").map((i) => i.msg);
+  errors.push(...native.checkSettings(job, settings));
   if (errors.length) return res.status(400).json({ error: errors.join("\n") });
 
+  const python = pythonFor(settings);
   const { result } = buildForJob(name, job);
-  for (const f of result.files) fs.writeFileSync(f.path, f.content, "utf8");
   fs.mkdirSync(result.outputDir, { recursive: true });
-
-  const backendSettings = settings.backends[backendId];
-  const python = resolvePython(backendSettings.python, backendSettings.root);
+  fs.writeFileSync(result.runPath, JSON.stringify(result.run, null, 2));
   const scriptName = process.platform === "win32" ? "launch_command.bat" : "launch_command.sh";
   fs.writeFileSync(path.join(jobDir(name), scriptName), launchScript(python, result.args, result.cwd, result.env), { mode: 0o755 });
 
-  const header = `--- ${S.MODELS[job.model].label} via ${S.BACKENDS[backendId].label} ---\n$ ${[python, ...result.args].join(" ")}\n\n`;
+  const header = `--- ${S.MODELS[job.model].label} (${S.variantOf(job).label || job.variant}) ---\n$ ${[python, ...result.args].join(" ")}\n\n`;
   const run = runner.start(name, {
     python,
     args: result.args,
@@ -246,15 +241,8 @@ app.get("/api/jobs/:name/progress", h((req, res) => {
   res.json({ running: false, progress: null, points: [] });
 }));
 
-// Where a job's backend writes outputs (depends on settings + output name).
 function jobOutputs(name) {
-  const job = readJob(name);
-  try {
-    const { result } = buildForJob(name, job);
-    return result;
-  } catch (e) {
-    return { outputDir: path.join(jobDir(name), "output"), samplesDir: path.join(jobDir(name), "output") };
-  }
+  return buildForJob(name, readJob(name)).result;
 }
 
 function walkImages(dir, out = [], depth = 0) {
@@ -340,6 +328,70 @@ app.post("/api/system/open-folder", h((req, res) => {
   if (!fs.existsSync(target)) return res.status(404).json({ error: `Not found: ${target}` });
   openNative(target);
   res.json({ ok: true });
+}));
+
+function dirSize(dir) {
+  let total = 0;
+  let files = 0;
+  if (!fs.existsSync(dir)) return { bytes: 0, files: 0 };
+  const stack = [dir];
+  while (stack.length) {
+    const d = stack.pop();
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) stack.push(full);
+      else {
+        total += fs.statSync(full).size;
+        files++;
+      }
+    }
+  }
+  return { bytes: total, files };
+}
+
+app.get("/api/system/cache", h((req, res) => {
+  const dir = native.resolveDirs(getSettings()).cache;
+  const models = {};
+  for (const id of Object.keys(S.MODELS)) models[id] = dirSize(path.join(dir, id));
+  res.json({ dir, models });
+}));
+
+app.delete("/api/system/cache/:model", h((req, res) => {
+  if (!S.MODELS[req.params.model]) return res.status(400).json({ error: "Unknown model" });
+  if ([...runner.runs.keys()].length) return res.status(400).json({ error: "Stop running jobs before clearing the cache" });
+  fs.rmSync(path.join(native.resolveDirs(getSettings()).cache, req.params.model), { recursive: true, force: true });
+  res.json({ ok: true });
+}));
+
+// Report the Python environment the trainer will use.
+app.post("/api/system/check-python", h((req, res) => {
+  let python;
+  try {
+    python = pythonFor(S.deepMerge(getSettings(), req.body || {}));
+  } catch (e) {
+    return res.json({ ok: false, error: e.message });
+  }
+  const code = [
+    "import importlib, json, sys",
+    "out = {'python_version': sys.version.split()[0]}",
+    "for m in ['torch', 'transformers', 'safetensors', 'bitsandbytes', 'prodigyopt', 'fla']:",
+    "    try:",
+    "        mod = importlib.import_module(m); out[m] = getattr(mod, '__version__', 'ok')",
+    "    except Exception as e:",
+    "        out[m] = None",
+    "try:",
+    "    import torch; out['cuda'] = torch.cuda.is_available(); out['gpu'] = torch.cuda.get_device_name(0) if out['cuda'] else None",
+    "except Exception: pass",
+    "print(json.dumps(out))",
+  ].join("\n");
+  execFile(python, ["-c", code], { timeout: 60000 }, (err, stdout, stderr) => {
+    if (err) return res.json({ ok: false, python, error: (stderr || err.message).slice(-2000) });
+    try {
+      res.json({ ok: true, python, ...JSON.parse(stdout.trim().split("\n").pop()) });
+    } catch (e) {
+      res.json({ ok: false, python, error: stdout.slice(-2000) });
+    }
+  });
 }));
 
 app.get("/api/system/gpus", h((req, res) => {

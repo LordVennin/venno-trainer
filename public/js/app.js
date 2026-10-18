@@ -1,5 +1,5 @@
 /* Venno Trainer frontend. Form fields carry data-bind="section.key" and are
-   synced with the in-memory job object; data-backend / data-show control
+   synced with the in-memory job object; data-model / data-show control
    which fields a model shows. */
 "use strict";
 
@@ -88,9 +88,6 @@ function setPath(obj, p, v) {
   keys.reduce((o, k) => (o[k] ??= {}), obj)[last] = v;
 }
 
-function backend() {
-  return S.backendOf(job);
-}
 
 // collapsed state is UI-only, it should not mark the job dirty
 function snapshot(j) {
@@ -200,7 +197,7 @@ function setRunning(r) {
 // --------------------------------------------------------------- populate
 
 function fillOptions(select, key) {
-  const list = (S.OPTIONS[key] && S.OPTIONS[key][backend()]) || [];
+  const list = S.OPTIONS[key] || [];
   select.innerHTML = list
     .map((o) => {
       const [v, l] = Array.isArray(o) ? o : [o, o];
@@ -215,7 +212,7 @@ function populate() {
   const badge = $("job-model-badge");
   badge.className = `badge badge-${job.model}`;
   badge.textContent = model.label;
-  $("model-label").value = `${model.label} — ${S.BACKENDS[model.backend].label}`;
+  $("model-label").value = model.label;
 
   $("cfg-variant").innerHTML = Object.entries(model.variants)
     .map(([id, v]) => `<option value="${id}">${escapeHtml(v.label)}</option>`)
@@ -255,13 +252,12 @@ function onBoundInput(e) {
   if (el.dataset.bind.startsWith("dataset.") || el.dataset.bind.startsWith("training.duration") || el.dataset.bind === "variant") {
     renderDatasets();
   }
-  if (el.dataset.bind === "variant") renderPrompts();
   applyVisibility();
   checkDirty();
 }
 
 function evalCond(cond) {
-  const ctx = Object.assign({}, job, { edit: !!S.variantOf(job).edit });
+  const ctx = job;
   let m;
   if ((m = /^(.+?)!=(.*)$/.exec(cond))) return String(getPath(ctx, m[1])) !== m[2];
   if ((m = /^(.+?)=(.*)$/.exec(cond))) return String(getPath(ctx, m[1])) === m[2];
@@ -270,13 +266,14 @@ function evalCond(cond) {
 }
 
 function applyVisibility() {
-  const b = backend();
-  document.querySelectorAll("[data-backend]").forEach((el) => {
-    el.classList.toggle("hidden", el.dataset.backend !== b);
+  document.querySelectorAll("#job-editor [data-model]").forEach((el) => {
+    el.classList.toggle("hidden", el.dataset.model !== job.model);
   });
   document.querySelectorAll("#job-editor [data-show]").forEach((el) => {
-    if (el.dataset.backend && el.dataset.backend !== b) return;
-    el.classList.toggle("hidden", !el.dataset.show.split("&").every(evalCond));
+    if (el.dataset.model && el.dataset.model !== job.model) return;
+    // "a&b" = both, "a|b" = either
+    const visible = el.dataset.show.split("&").every((term) => term.split("|").some(evalCond));
+    el.classList.toggle("hidden", !visible);
   });
   updateEpochHint();
 }
@@ -335,15 +332,11 @@ function datasetTotals() {
   const res = S.parseIntList(job.dataset.resolutions, [1024]);
   const batches = S.parseIntList(job.dataset.batch_sizes, [1]);
   const accum = Math.max(1, parseInt(job.training.grad_accum, 10) || 1);
-  let stepsPerEpoch;
-  if (backend() === "anima") {
-    // each resolution block steps with its own batch size
-    const perRes = effective / res.length;
-    stepsPerEpoch = res.reduce((sum, _, i) => sum + Math.ceil(perRes / (batches[i] ?? batches[batches.length - 1])), 0);
-    stepsPerEpoch = Math.ceil(stepsPerEpoch / accum);
-  } else {
-    stepsPerEpoch = Math.ceil(effective / (batches[0] * accum));
-  }
+  // each resolution steps with its own batch size (estimate: bucket
+  // remainders add a few batches; the trainer logs the exact count)
+  const perRes = effective / res.length;
+  let stepsPerEpoch = res.reduce((sum, _, i) => sum + Math.ceil(perRes / (batches[i] ?? batches[batches.length - 1])), 0);
+  stepsPerEpoch = Math.ceil(stepsPerEpoch / accum);
   return { total: folders.length, enabled: enabled.length, images, captioned, effective, stepsPerEpoch, scanned };
 }
 
@@ -367,9 +360,11 @@ function updateEpochHint() {
   const el = $("epoch-steps-hint");
   if (!el || !job) return;
   const t = datasetTotals();
-  el.textContent = t.stepsPerEpoch
-    ? `Currently ${fmt(t.stepsPerEpoch)} steps/epoch → ${fmt(t.stepsPerEpoch * (parseInt(job.training.max_epochs, 10) || 0))} steps.`
-    : "";
+  if (!t.stepsPerEpoch) return (el.textContent = "");
+  el.textContent =
+    job.training.duration_unit === "steps"
+      ? `About ${fmt(t.stepsPerEpoch)} steps per epoch → ${((parseInt(job.training.max_steps, 10) || 0) / t.stepsPerEpoch).toFixed(1)} epochs.`
+      : `About ${fmt(t.stepsPerEpoch)} steps per epoch → ${fmt(t.stepsPerEpoch * (parseInt(job.training.max_epochs, 10) || 0))} steps.`;
 }
 
 function folderChips(f) {
@@ -381,7 +376,7 @@ function folderChips(f) {
     if (s.captioned < s.images) chips.push(`<span class="chip warn" title="Images without a caption file">${fmt(s.images - s.captioned)} uncaptioned</span>`);
   }
   chips.push(`<span class="chip" title="Repeats">×${escapeHtml(f.repeats)}</span>`);
-  if (backend() === "aitk" && Number(f.loss_weight) !== 1) chips.push(`<span class="chip" title="Loss weight">w ${escapeHtml(f.loss_weight)}</span>`);
+  if (Number(f.loss_weight) !== 1) chips.push(`<span class="chip" title="Loss weight">w ${escapeHtml(f.loss_weight)}</span>`);
   if (Number(f.caption_dropout) > 0) chips.push(`<span class="chip" title="Caption dropout">cap ${Math.round(f.caption_dropout * 100)}%</span>`);
   if (Number(f.tag_dropout) > 0) chips.push(`<span class="chip" title="Tag dropout">tag ${Math.round(f.tag_dropout * 100)}%</span>`);
   if (f.is_reg) chips.push('<span class="badge badge-reg">REG</span>');
@@ -399,8 +394,6 @@ function renderDatasets() {
   list.innerHTML = "";
   const folders = job.dataset.folders;
   const totalEff = folders.reduce((s, f) => s + folderEffective(f), 0);
-  const isAnima = backend() === "anima";
-  const edit = !!S.variantOf(job).edit;
 
   folders.forEach((f, idx) => {
     if (!folderMatchesFilter(f)) return;
@@ -435,12 +428,6 @@ function renderDatasets() {
           </div>
           <small class="ds-scan">${s && s.exists ? `${fmt(s.images)} images, ${fmt(s.captioned)} with ${escapeHtml(job.dataset.caption_ext)} captions${s.missing.length ? ` — missing e.g. ${escapeHtml(s.missing.slice(0, 3).join(", "))}` : ""}` : s && f.path.trim() ? "Folder not found" : ""}</small>
         </div>
-        ${edit ? `
-        <div class="form-group">
-          <label>Control Images Directory</label>
-          <input type="text" data-f="control_path" value="${escapeHtml(f.control_path)}" placeholder="/path/to/control_images">
-          <small>Reference images with the same file names as the targets.</small>
-        </div>` : ""}
         <div class="form-row">
           <div class="form-group">
             <label>Repeats</label>
@@ -448,8 +435,8 @@ function renderDatasets() {
           </div>
           <div class="form-group">
             <label>Loss Weight</label>
-            <input type="number" data-f="loss_weight" value="${escapeHtml(f.loss_weight)}" step="0.1" min="0" ${isAnima ? 'disabled title="sd-scripts has no per-folder loss weight; use repeats"' : ""}>
-            ${isAnima ? "<small>Not supported by sd-scripts — use repeats.</small>" : "<small>Multiplies this folder's loss.</small>"}
+            <input type="number" data-f="loss_weight" value="${escapeHtml(f.loss_weight)}" step="0.1" min="0">
+            <small>Multiplies this folder's loss.</small>
           </div>
           <div class="form-group">
             <label>Keep Tokens</label>
@@ -458,9 +445,9 @@ function renderDatasets() {
           </div>
         </div>
         <div class="form-group">
-          <label>${isAnima ? "Caption Prefix" : "Trigger Word"}</label>
-          <input type="text" data-f="caption_prefix" value="${escapeHtml(f.caption_prefix)}" placeholder="${isAnima ? "e.g. sks character, " : "e.g. sks"}">
-          <small>${isAnima ? "Prepended to every caption in this folder." : "Added to the start of captions that do not already contain it (or replaces [trigger])."}</small>
+          <label>Caption Prefix / Trigger</label>
+          <input type="text" data-f="caption_prefix" value="${escapeHtml(f.caption_prefix)}" placeholder="e.g. sks character,">
+          <small>Prepended to every caption in this folder (counts toward keep tokens).</small>
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -473,12 +460,11 @@ function renderDatasets() {
             <input type="number" data-f="tag_dropout" value="${escapeHtml(f.tag_dropout)}" step="0.01" min="0" max="1">
             <small>Chance to drop each comma-separated tag.</small>
           </div>
-          ${isAnima ? `
           <div class="form-group">
             <label>Dropout Every N Epochs</label>
             <input type="number" data-f="dropout_every_n_epochs" value="${escapeHtml(f.dropout_every_n_epochs)}" min="0">
-            <small>0 = off.</small>
-          </div>` : ""}
+            <small>Whole epochs trained without captions. 0 = off.</small>
+          </div>
         </div>
         <div class="checkbox-group" style="margin-bottom:10px;">
           <label class="hint inline"><input type="checkbox" data-f="shuffle" ${f.shuffle ? "checked" : ""}> Shuffle captions</label>
@@ -654,9 +640,8 @@ function openBulkEdit() {
   $("bulk-target").textContent = selectedFolders.size
     ? `Applies to the ${targets.length} selected dataset(s).`
     : `No datasets selected — applies to all ${targets.length} datasets.`;
-  const hide = backend() === "anima" ? ["loss_weight"] : ["dropout_every_n_epochs"];
   const first = targets[0] || S.defaultFolder();
-  $("bulk-fields").innerHTML = BULK_FIELDS.filter(([k]) => !hide.includes(k))
+  $("bulk-fields").innerHTML = BULK_FIELDS
     .map(([k, label, type, step]) => {
       const input =
         type === "checkbox"
@@ -695,7 +680,6 @@ function renderPrompts() {
   const prompts = job.sampling.prompts;
   $("prompts-empty").classList.toggle("hidden", prompts.length > 0);
   list.innerHTML = "";
-  const edit = !!S.variantOf(job).edit;
   prompts.forEach((p, idx) => {
     const card = document.createElement("div");
     card.className = "prompt-card" + (p.enabled === false ? " skipped" : "");
@@ -716,7 +700,6 @@ function renderPrompts() {
         <div class="compact-input"><label>Steps</label><input type="number" data-p="steps" value="${val("steps", s.steps)}"></div>
         <div class="compact-input"><label>CFG</label><input type="number" data-p="cfg" step="0.5" value="${val("cfg", s.cfg)}"></div>
         <div class="compact-input"><label>Seed</label><input type="number" data-p="seed" value="${val("seed", s.seed)}"></div>
-        ${edit ? `<div class="compact-input" style="flex:1;min-width:200px;"><label>Control image</label><input type="text" data-p="ctrl_img" style="width:100%;" value="${val("ctrl_img", "")}" placeholder="/path/to/reference.png"></div>` : ""}
       </div>`;
     card.querySelectorAll("[data-p]").forEach((el) => {
       el.addEventListener(el.type === "checkbox" ? "change" : "input", () => {
@@ -965,17 +948,16 @@ function drawLossChart() {
 function buildGlobalSettings() {
   const tabs = [
     {
-      id: "backends",
-      label: "Trainers",
+      id: "trainer",
+      label: "Trainer",
       html: `
-        <div class="note">Venno Trainer drives existing trainer installs. Install each one with its own setup script, then point to it here.</div>
-        <h4>Anima Standalone Trainer</h4>
-        <div class="form-group"><label>Install Folder</label><input type="text" data-g="backends.anima.root" placeholder="/home/me/Anima-Standalone-Trainer"><small>Folder containing <code>anima_train_network.py</code>. ${S.BACKENDS.anima.repo}</small></div>
-        <div class="form-group"><label>Python Venv (or python executable)</label><input type="text" data-g="backends.anima.python" placeholder="Blank = &lt;install folder&gt;/venv"></div>
-        <h4>ai-toolkit</h4>
-        <div class="form-group"><label>Install Folder</label><input type="text" data-g="backends.aitk.root" placeholder="/home/me/ai-toolkit"><small>Folder containing <code>run.py</code>. ${S.BACKENDS.aitk.repo}</small></div>
-        <div class="form-group"><label>Python Venv (or python executable)</label><input type="text" data-g="backends.aitk.python" placeholder="Blank = &lt;install folder&gt;/venv"></div>
-        <div class="form-group"><label>HuggingFace Token</label><input type="password" data-g="hf_token" placeholder="hf_..."><small>Passed to ai-toolkit as HF_TOKEN so it can download MOSS-Image / Qwen3.5 weights.</small></div>`,
+        <div class="note">Training runs in the bundled Python trainer. Run <code>./setup.sh</code> once to create its environment in <code>./venv</code>.</div>
+        <div class="form-group"><label>Python Venv (or python executable)</label><input type="text" data-g="python" placeholder="Blank = ./venv"></div>
+        <div class="form-group"><div class="inline"><button class="btn btn-sm" id="btn-check-python">Check environment</button><span id="python-status" class="hint"></span></div></div>
+        <div class="form-group"><label>Cache Folder</label><input type="text" data-g="cache_dir" placeholder="Blank = ./cache"><small>Latent and caption caches shared by all jobs.</small></div>
+        <div class="form-group"><div class="inline"><span id="cache-status" class="hint">…</span></div></div>
+        <div class="form-group"><label>Model Download Folder</label><input type="text" data-g="models_dir" placeholder="Blank = ./models"><small>Where MOSS-Image is downloaded when no model folder is set.</small></div>
+        <div class="form-group"><label>HuggingFace Token</label><input type="password" data-g="hf_token" placeholder="hf_..."><small>Optional; faster, rate-limit-free downloads.</small></div>`,
     },
     ...Object.entries(S.MODELS).map(([id, m]) => ({
       id: "model-" + id,
@@ -1005,7 +987,53 @@ function buildGlobalSettings() {
 async function openGlobalSettings() {
   settings = await api("/api/settings");
   document.querySelectorAll("[data-g]").forEach((el) => (el.value = getPath(settings, el.dataset.g) ?? ""));
+  $("python-status").textContent = "";
   openModal("modal-global-settings");
+  loadCacheStatus();
+}
+
+function fmtBytes(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + " GB";
+  if (n >= 1e6) return (n / 1e6).toFixed(0) + " MB";
+  return Math.ceil(n / 1e3) + " KB";
+}
+
+async function loadCacheStatus() {
+  const box = $("cache-status");
+  try {
+    const c = await api("/api/system/cache");
+    box.innerHTML = Object.entries(c.models)
+      .map(([id, v]) => `${escapeHtml(S.MODELS[id].label)}: ${fmtBytes(v.bytes)} <button class="btn btn-xs" data-clear-cache="${id}" ${v.files ? "" : "disabled"}>Clear</button>`)
+      .join(" &nbsp; ");
+    box.querySelectorAll("[data-clear-cache]").forEach((b) => {
+      b.onclick = () =>
+        showConfirm("Clear cache", `Delete the cached latents and captions for ${S.MODELS[b.dataset.clearCache].label}? They are rebuilt on the next run.`, async () => {
+          try {
+            await api(`/api/system/cache/${b.dataset.clearCache}`, { method: "DELETE" });
+          } catch (e) {
+            showToast(e.message);
+          }
+          loadCacheStatus();
+        }, "Clear");
+    });
+  } catch (e) {
+    box.textContent = e.message;
+  }
+}
+
+async function checkPython() {
+  const box = $("python-status");
+  box.textContent = "Checking…";
+  const r = await api("/api/system/check-python", { method: "POST", body: { python: document.querySelector('[data-g="python"]').value.trim() } });
+  if (!r.ok) {
+    box.innerHTML = `<span style="color:var(--danger)">${escapeHtml(r.error || "failed")}</span>`;
+    return;
+  }
+  const missing = ["torch", "transformers", "safetensors", "bitsandbytes"].filter((m) => !r[m]);
+  box.innerHTML = `Python ${escapeHtml(r.python_version)} · torch ${escapeHtml(r.torch || "missing")} · ` +
+    (r.cuda ? `GPU: ${escapeHtml(r.gpu)}` : '<span style="color:var(--warning)">no CUDA GPU</span>') +
+    (missing.length ? ` · <span style="color:var(--danger)">missing: ${missing.join(", ")}</span>` : " · packages OK") +
+    (r.fla ? "" : " · tip: pip install flash-linear-attention speeds up MOSS caption encoding");
 }
 
 async function saveGlobalSettings() {
@@ -1078,7 +1106,7 @@ function switchTab(name) {
 
 function fillModelSelect(sel) {
   sel.innerHTML = Object.entries(S.MODELS)
-    .map(([id, m]) => `<option value="${id}">${escapeHtml(m.label)} (${escapeHtml(S.BACKENDS[m.backend].label)})</option>`)
+    .map(([id, m]) => `<option value="${id}">${escapeHtml(m.label)}</option>`)
     .join("");
 }
 
@@ -1269,7 +1297,6 @@ function bindEvents() {
       const env = Object.entries(r.command.env).map(([k, v]) => `${k}=${k === "HF_TOKEN" ? "***" : v}`).join(" ");
       $("preview-output").innerHTML =
         `<div class="preview-file"><strong>Command</strong> <small class="hint">(cwd: ${escapeHtml(r.command.cwd || "trainer folder not set")})</small><pre>${escapeHtml((env ? env + " " : "") + cmd)}</pre></div>` +
-        (r.steps ? `<p class="hint">Total steps: ${fmt(r.steps)}</p>` : "") +
         r.files.map((f) => `<div class="preview-file"><strong>${escapeHtml(f.name)}</strong> <small class="hint">${escapeHtml(f.path)}</small><pre>${escapeHtml(f.content)}</pre></div>`).join("");
     } catch (e) {
       $("preview-output").innerHTML = `<div class="issue error">${escapeHtml(e.message)}</div>`;
@@ -1293,6 +1320,7 @@ function bindEvents() {
   // global settings
   $("btn-global-settings").onclick = openGlobalSettings;
   $("btn-save-global").onclick = () => saveGlobalSettings().catch((e) => showToast(e.message));
+  $("btn-check-python").onclick = () => checkPython().catch((e) => showToast(e.message));
 
   document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "s" && job) {
@@ -1326,8 +1354,8 @@ async function init() {
     last = localStorage.getItem("last_job");
   } catch (e) {}
   if (last && jobs.some((j) => j.name === last)) selectJob(last);
-  if (settings && !settings.backends.anima.root && !settings.backends.aitk.root) {
-    showToast("First run: open ⚙️ Global Settings and point Venno Trainer at your Anima trainer and/or ai-toolkit installs.", 8000);
+  if (settings && jobs.length === 0) {
+    showToast("First run: open ⚙️ Global Settings → Trainer and press 'Check environment', then set your model paths.", 8000);
   }
 }
 

@@ -66,7 +66,7 @@
                     <button class="tab" data-tab="prompts">Prompts</button>
                     <button class="tab" data-tab="samples">Samples</button>
                     <button class="tab" data-tab="console">Console</button>
-                    <button class="tab" data-tab="advanced">Advanced</button>
+                    <button class="tab" data-tab="advanced">Run Config</button>
                     <button class="tab" data-tab="settings" title="Job settings">⚙️</button>
                 </div>
                 <div id="issues" class="issues"></div>
@@ -79,45 +79,18 @@
                             <div class="form-group">
                                 <label>Model</label>
                                 <input type="text" id="model-label" disabled>
-                                <small>Clone the job to train the same dataset on another model.</small>
+                                <small>Clone the job (⚙️ tab) to train the same dataset on another model.</small>
                             </div>
                             <div class="form-group">
                                 <label>Variant</label>
                                 <select id="cfg-variant" data-bind="variant"></select>
                             </div>
                         </div>
-                        <div data-backend="aitk">
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label><input type="checkbox" data-bind="training.quantize"> Quantize Transformer</label>
-                                    <select data-bind="training.qtype" data-options="qtype" data-show="training.quantize"></select>
-                                </div>
-                                <div class="form-group">
-                                    <label><input type="checkbox" data-bind="training.quantize_te"> Quantize Text Encoder (Qwen3.5-9B)</label>
-                                    <select data-bind="training.qtype_te" data-options="qtype" data-show="training.quantize_te"></select>
-                                </div>
-                            </div>
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label><input type="checkbox" data-bind="training.low_vram"> Low VRAM</label>
-                                    <small>Keeps parts on CPU while loading/quantizing. Recommended on 24 GB cards.</small>
-                                </div>
-                                <div class="form-group">
-                                    <label><input type="checkbox" data-bind="training.layer_offloading"> Layer Offloading</label>
-                                    <small>Streams transformer layers from system RAM. Slower, much less VRAM.</small>
-                                </div>
-                            </div>
-                        </div>
-
                         <h4>Optimization</h4>
                         <div class="form-row">
                             <div class="form-group">
                                 <label>Learning Rate</label>
                                 <input type="text" data-bind="training.lr" placeholder="1e-4">
-                            </div>
-                            <div class="form-group" data-backend="anima" data-show="network.train_te&network.type!=full_finetune">
-                                <label>Text Encoder LR</label>
-                                <input type="text" data-bind="training.te_lr" placeholder="5e-5">
                             </div>
                             <div class="form-group">
                                 <label>Optimizer</label>
@@ -165,7 +138,7 @@
                                 <label><input type="radio" name="duration-unit" value="epochs" data-bind="training.duration_unit"> Epochs</label>
                                 <label><input type="radio" name="duration-unit" value="steps" data-bind="training.duration_unit"> Steps</label>
                             </div>
-                            <small data-backend="aitk" data-show="training.duration_unit=epochs">ai-toolkit trains by steps: epochs are converted with the dataset scan (images × repeats ÷ batch). <span id="epoch-steps-hint"></span></small>
+                            <small id="epoch-steps-hint"></small>
                         </div>
                         <div class="form-row" data-show="training.duration_unit=epochs">
                             <div class="form-group">
@@ -193,7 +166,7 @@
                                 <input type="number" data-bind="training.keep_last_n" min="0">
                                 <small>0 = keep all.</small>
                             </div>
-                            <div class="form-group" data-backend="anima">
+                            <div class="form-group">
                                 <label>Keep Last N Save States</label>
                                 <input type="number" data-bind="training.keep_last_n_states" min="0">
                                 <small>Training-state folders for resuming. 0 = keep all.</small>
@@ -218,71 +191,68 @@
                                 <label>Gradient Accumulation</label>
                                 <input type="number" data-bind="training.grad_accum" min="1">
                             </div>
-                            <div class="form-group" data-backend="anima">
-                                <label>DataLoader Workers</label>
-                                <input type="number" data-bind="training.workers" min="0" max="32">
-                            </div>
                         </div>
                         <div class="form-row">
                             <div class="form-group">
                                 <label><input type="checkbox" data-bind="training.gradient_checkpointing"> Gradient Checkpointing</label>
                                 <small>Trades compute for VRAM. Recommended on.</small>
                             </div>
-                            <div class="form-group" data-backend="anima">
-                                <label><input type="checkbox" data-bind="training.flash_attn"> Flash Attention</label>
-                                <small>Requires the flash-attn package.</small>
+                            <div class="form-group">
+                                <label><input type="checkbox" data-bind="training.fp8_base"> fp8 Base Weights</label>
+                                <small>Stores the frozen DiT weights in 8 bits (about half the VRAM). The LoRA trains in full precision.</small>
                             </div>
-                            <div class="form-group" data-backend="anima">
-                                <label>Blocks to Swap</label>
-                                <input type="number" data-bind="training.blocks_to_swap" min="0" max="26">
-                                <small>Moves DiT blocks to RAM to save VRAM. 0 = off.</small>
+                            <div class="form-group" data-model="anima">
+                                <label><input type="checkbox" data-bind="training.flash_attn"> Flash Attention</label>
+                                <small>Used if the flash-attn package is installed.</small>
                             </div>
                         </div>
                         <div class="form-group">
-                            <label>GPU(s)</label>
+                            <label>GPU</label>
                             <div class="inline">
                                 <input type="text" data-bind="training.gpu_ids" placeholder="0" style="max-width: 160px;">
                                 <span id="gpu-chips" class="inline"></span>
                             </div>
-                            <small data-backend="anima">Comma-separated GPU ids. More than one uses DDP via accelerate.</small>
-                            <small data-backend="aitk">ai-toolkit trains on one GPU; the first id is used.</small>
+                            <small>Index of the GPU to train on.</small>
                         </div>
 
                         <h4>Caching</h4>
+                        <div class="note">Latents and caption embeddings are cached once per model in the shared cache folder (Global Settings) and reused by every job.</div>
+                        <div class="form-row">
+                            <div class="form-group" data-model="anima">
+                                <label><input type="checkbox" data-bind="training.cache_te"> Cache Text Encoder Outputs</label>
+                                <small>Off: the small Qwen3 encoder stays loaded and every step gets freshly shuffled/dropped tags.</small>
+                            </div>
+                            <div class="form-group" data-model="moss_image">
+                                <label><input type="checkbox" checked disabled> Cache Text Encoder Outputs</label>
+                                <small>Always on: the 9B Qwen3.5 encoder is loaded once to encode captions, then unloaded.</small>
+                            </div>
+                            <div class="form-group" data-show="!training.cache_te|model=moss_image">
+                                <label>Caption Variants per Image</label>
+                                <input type="number" data-bind="training.te_variants" min="1" max="64">
+                                <small>For folders with tag dropout or shuffling: this many randomized captions are cached per image and one is picked each step.</small>
+                            </div>
+                        </div>
                         <div class="form-row">
                             <div class="form-group">
-                                <label><input type="checkbox" data-bind="training.cache_latents"> Cache Latents to Disk</label>
-                                <small>Pre-encodes images once. Recommended for large datasets.</small>
+                                <label>VAE Batch Size</label>
+                                <input type="number" data-bind="training.vae_batch" min="1" max="32">
                             </div>
                             <div class="form-group">
-                                <label><input type="checkbox" data-bind="training.cache_te"> Cache Text Encoder Outputs</label>
-                                <small>Encodes captions once and frees the text encoder. Caption dropout still works; tag dropout and caption shuffling need this off.</small>
+                                <label>Image Loading Threads</label>
+                                <input type="number" data-bind="training.workers" min="1" max="32">
                             </div>
                         </div>
 
                         <h4>Timesteps &amp; Loss</h4>
-                        <div class="form-row" data-backend="anima">
+                        <div class="form-row">
                             <div class="form-group">
-                                <label>Timestep Sample Method</label>
+                                <label>Timestep Sampling</label>
                                 <select data-bind="training.timestep" data-options="timestep"></select>
                             </div>
                             <div class="form-group">
                                 <label>Flow Shift</label>
                                 <input type="number" data-bind="training.flow_shift" step="0.1" min="0">
-                            </div>
-                        </div>
-                        <div class="form-row" data-backend="aitk">
-                            <div class="form-group">
-                                <label>Timestep Type</label>
-                                <select data-bind="training.timestep" data-options="timestep"></select>
-                            </div>
-                            <div class="form-group">
-                                <label>Timestep Bias</label>
-                                <select data-bind="training.timestep_bias">
-                                    <option value="balanced">Balanced</option>
-                                    <option value="content">High noise (content)</option>
-                                    <option value="style">Low noise (style)</option>
-                                </select>
+                                <small>Shifts training toward noisier timesteps. Anima default 3, MOSS 5.</small>
                             </div>
                             <div class="form-group">
                                 <label>Loss Type</label>
@@ -301,14 +271,12 @@
                             <div class="form-group">
                                 <label>Resolution(s)</label>
                                 <input type="text" data-bind="dataset.resolutions" placeholder="e.g. 512, 768, 1024">
-                                <small data-backend="anima">Comma-separate for multi-resolution training (one dataset block per resolution).</small>
-                                <small data-backend="aitk">ai-toolkit buckets every folder at each listed resolution.</small>
+                                <small>Comma-separate to train every folder at several resolutions.</small>
                             </div>
                             <div class="form-group">
                                 <label>Batch Size(s)</label>
                                 <input type="text" data-bind="dataset.batch_sizes" placeholder="e.g. 4, 2">
-                                <small data-backend="anima">One per resolution; the last value repeats.</small>
-                                <small data-backend="aitk">ai-toolkit uses the first value.</small>
+                                <small>One per resolution; the last value repeats.</small>
                             </div>
                             <div class="form-group">
                                 <label>Caption Extension</label>
@@ -319,11 +287,11 @@
                             <div class="form-group">
                                 <label><input type="checkbox" data-bind="dataset.enable_bucket"> Aspect Ratio Bucketing</label>
                             </div>
-                            <div class="form-group" data-backend="anima">
+                            <div class="form-group">
                                 <label><input type="checkbox" data-bind="dataset.bucket_no_upscale"> Do Not Upscale Images</label>
                             </div>
                         </div>
-                        <div class="form-row" data-backend="anima" data-show="dataset.enable_bucket">
+                        <div class="form-row" data-show="dataset.enable_bucket">
                             <div class="form-group">
                                 <label>Min Bucket Resolution</label>
                                 <input type="number" data-bind="dataset.min_bucket" min="64" step="64">
@@ -355,62 +323,46 @@
 
                     <!-- ============================================ Network -->
                     <div id="tab-network" class="tab-pane hidden">
-                        <div class="form-group">
-                            <label>Training Type</label>
-                            <select data-bind="network.type" data-options="network_type"></select>
-                        </div>
-                        <div data-show="network.type!=full_finetune">
-                            <h4>Network</h4>
-                            <div class="form-row">
-                                <div class="form-group">
-                                    <label>Network Dim (Rank)</label>
-                                    <input type="number" data-bind="network.dim" min="1">
-                                    <small>Higher = more capacity, bigger file, more VRAM.</small>
-                                </div>
-                                <div class="form-group">
-                                    <label>Network Alpha</label>
-                                    <input type="number" data-bind="network.alpha" min="0" step="any">
-                                    <small>Scaling factor. Usually equal to dim.</small>
-                                </div>
-                                <div class="form-group">
-                                    <label>Network Dropout</label>
-                                    <input type="number" data-bind="network.dropout" min="0" max="1" step="0.05">
-                                    <small>0 = off.</small>
-                                </div>
-                            </div>
-                            <div class="form-group" data-backend="anima">
-                                <label><input type="checkbox" data-bind="network.train_te"> Also train the text encoder</label>
-                                <small>Usually off. Requires text encoder caching off.</small>
-                            </div>
-                            <div class="form-group" data-backend="anima">
-                                <label>Network Args</label>
-                                <input type="text" data-bind="network.network_args" placeholder="e.g. conv_dim=4 conv_alpha=4">
-                                <small>Space-separated key=value pairs passed to networks.lora_anima.</small>
-                            </div>
-                            <div class="form-group" data-backend="aitk">
-                                <label>Skip Layers Containing</label>
-                                <input type="text" data-bind="network.ignore_layers" placeholder="layers.22.">
-                                <small>Comma/space separated. MOSS samples with block 22 skipped on the CFG negative branch, so the default keeps the LoRA off it.</small>
+                        <h4>LoRA</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Network Dim (Rank)</label>
+                                <input type="number" data-bind="network.dim" min="1">
+                                <small>Higher = more capacity, bigger file, more VRAM.</small>
                             </div>
                             <div class="form-group">
-                                <label>Initialize From LoRA</label>
-                                <input type="text" data-bind="network.init_weights" placeholder="/path/to/lora.safetensors">
-                                <small>Start from existing LoRA weights (fresh optimizer). Usually blank.</small>
+                                <label>Network Alpha</label>
+                                <input type="number" data-bind="network.alpha" min="0" step="any">
+                                <small>Scaling factor. Usually equal to dim.</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Network Dropout</label>
+                                <input type="number" data-bind="network.dropout" min="0" max="1" step="0.05">
+                                <small>0 = off.</small>
                             </div>
                         </div>
+                        <div class="form-group">
+                            <label>Skip Layers Containing</label>
+                            <input type="text" data-bind="network.ignore_layers" placeholder="e.g. blocks.27. or adaln_modulation">
+                            <small data-model="anima">Comma/space separated parts of layer names (blocks.N.self_attn.q_proj, blocks.N.mlp.layer1, …) to leave without LoRA.</small>
+                            <small data-model="moss_image">MOSS samples with block 22 skipped on the CFG negative branch, so the default keeps the LoRA off layers.22.</small>
+                        </div>
+                        <div class="form-group">
+                            <label>Initialize From LoRA</label>
+                            <input type="text" data-bind="network.init_weights" placeholder="/path/to/lora.safetensors">
+                            <small>Start from existing LoRA weights (fresh optimizer). Usually blank.</small>
+                        </div>
+                        <div class="note">Saved LoRAs use ComfyUI's key layout: <span data-model="anima"><code>lora_unet_blocks_N_…</code> (same as the Anima trainer)</span><span data-model="moss_image"><code>diffusion_model.layers.N.proj.q/k/v/o…</code> (same as ai-toolkit)</span>.</div>
 
                         <h4>Resume Training</h4>
-                        <div data-backend="anima">
-                            <div class="form-group">
-                                <label><input type="checkbox" data-bind="network.auto_resume"> Auto-resume from the last saved state</label>
-                                <small>Picks the newest *-state folder in this job's output.</small>
-                            </div>
-                            <div class="form-group" data-show="!network.auto_resume">
-                                <label>Resume State Folder</label>
-                                <input type="text" data-bind="network.resume_path" placeholder="/path/to/output/my_lora-000005-state">
-                            </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" data-bind="network.auto_resume"> Auto-resume from the last saved state</label>
+                            <small>Continues from the newest *-state folder in this job's output (optimizer, schedule and step). Stopping a run saves a state too.</small>
                         </div>
-                        <div class="note" data-backend="aitk">ai-toolkit resumes automatically: re-running a job with the same output name continues from the newest checkpoint in its output folder.</div>
+                        <div class="form-group" data-show="!network.auto_resume">
+                            <label>Resume State Folder</label>
+                            <input type="text" data-bind="network.resume_path" placeholder="/path/to/output/my_lora-step00000500-state">
+                        </div>
                     </div>
 
                     <!-- ============================================ Prompts -->
@@ -454,6 +406,7 @@
                             <div class="compact-input"><label>Steps</label><input type="number" data-bind="sampling.steps"></div>
                             <div class="compact-input"><label>CFG</label><input type="number" data-bind="sampling.cfg" step="0.5"></div>
                             <div class="compact-input"><label>Seed</label><input type="number" data-bind="sampling.seed"></div>
+                            <div class="compact-input" title="Sampler sigma shift for all prompts (Anima trainer previews: 1, MOSS: 5)"><label>Shift</label><input type="number" data-bind="sampling.shift" step="0.5"></div>
                             <span class="hint">Defaults for new prompts</span>
                             <button id="btn-apply-global" class="btn btn-primary btn-xs" style="margin-left:auto;">Apply to All</button>
                         </div>
@@ -509,17 +462,9 @@
 
                     <!-- ============================================ Advanced -->
                     <div id="tab-advanced" class="tab-pane hidden">
-                        <h4>Config Overrides</h4>
-                        <div class="note">
-                            <span data-backend="anima">TOML merged over the generated <code>config.toml</code> (any sd-scripts / Anima argument), e.g.<br><code>[training_arguments]</code><br><code>noise_offset = 0.03</code></span>
-                            <span data-backend="aitk">YAML merged over <code>config.process[0]</code> of the generated ai-toolkit config, e.g.<br><code>train:</code><br><code>&nbsp;&nbsp;ema_config: { use_ema: true, ema_decay: 0.99 }</code></span>
-                        </div>
-                        <div class="form-group">
-                            <textarea data-bind="advanced.overrides" rows="10" spellcheck="false" style="font-family: var(--mono); font-size: 0.82rem;"></textarea>
-                        </div>
                         <h4>Generated Config</h4>
                         <div class="form-group">
-                            <div class="inline"><button id="btn-preview" class="btn btn-sm">👁 Preview generated files</button><small>Exactly what will be written and run when you press Train.</small></div>
+                            <div class="inline"><button id="btn-preview" class="btn btn-sm">👁 Preview generated files</button><small>The run.json and command the trainer receives when you press Train.</small></div>
                         </div>
                         <div id="preview-output"></div>
                     </div>

@@ -1,4 +1,10 @@
 node_modules/
-jobs/
-settings.json
+/jobs/
+/settings.json
 *.log
+/venv/
+/.venv/
+/cache/
+/models/
+__pycache__/
+*.pyc

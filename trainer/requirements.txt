@@ -1,0 +1,10 @@
+# Venno trainer (Python side). PyTorch is installed separately by setup.sh
+# with the CUDA build matching your driver.
+transformers>=5.5
+safetensors>=0.4
+huggingface_hub>=0.34
+einops>=0.7
+pillow>=10
+numpy>=1.26
+bitsandbytes>=0.45
+prodigyopt>=1.1
