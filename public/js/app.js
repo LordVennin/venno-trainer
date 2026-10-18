@@ -854,14 +854,35 @@ async function loadProgress() {
 function resetProgressLine() {
   $("prog-step").textContent = "Step –";
   $("prog-loss").textContent = "Loss –";
+  $("prog-vram").textContent = "VRAM –";
+  $("prog-hint").textContent = "";
   $("prog-eta").textContent = "ETA –";
   $("prog-fill").style.width = "0";
+}
+
+// Turn the trainer's peak VRAM into a tuning hint for the GPU being used.
+function vramHint(peakGb) {
+  const idx = parseInt(String(job?.training.gpu_ids || "0").split(",")[0], 10) || 0;
+  const gpu = gpus.find((g) => g.index === idx) || gpus[0];
+  if (!gpu || !peakGb) return "";
+  const total = gpu.memTotal / 1024;
+  const frac = peakGb / total;
+  if (frac < 0.7) {
+    const opts = job.training.gradient_checkpointing ? "raise 'Blocks Without Checkpointing', " : "";
+    return `${(total - peakGb).toFixed(0)} GB of ${gpu.name} unused: ${opts}a larger batch size or resolution would use it.`;
+  }
+  if (frac > 0.95) return "Close to the VRAM limit: lower batch/resolution or 'Blocks Without Checkpointing', or enable fp8 base weights.";
+  return "";
 }
 
 function updateProgressLine(p) {
   $("prog-step").textContent = `Step ${fmt(p.step)} / ${fmt(p.total)}`;
   $("prog-loss").textContent = `Loss ${p.loss.toFixed(4)}`;
   $("prog-eta").textContent = `Elapsed ${p.elapsed} · ETA ${p.eta}`;
+  if (p.vram) {
+    $("prog-vram").textContent = `VRAM peak ${p.vram.toFixed(1)} GB`;
+    $("prog-hint").textContent = vramHint(p.vram);
+  }
   $("prog-fill").style.width = `${p.total ? (p.step / p.total) * 100 : 0}%`;
 }
 

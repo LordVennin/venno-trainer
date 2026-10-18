@@ -105,6 +105,9 @@ class AnimaAdapter(base.ModelAdapter):
             })
         return out
 
+    def text_sort_key(self, text):
+        return len(self.qwen_tok(text, truncation=True, max_length=MAX_TOKENS)["input_ids"])
+
     def collate_text(self, conds):
         # always padded to 512 like the original trainer: padded T5 positions
         # are zero vectors the DiT still attends to
@@ -181,8 +184,19 @@ class AnimaAdapter(base.ModelAdapter):
                         targets.append((name, module))
         return targets
 
-    def enable_gradient_checkpointing(self):
+    def enable_gradient_checkpointing(self, skip_last=0):
+        """Checkpoint every block except the last `skip_last` (spare VRAM buys speed)."""
         self.dit.enable_gradient_checkpointing()
+        blocks = list(self.dit.blocks)
+        for blk in blocks[len(blocks) - min(skip_last, len(blocks)):]:
+            blk.disable_gradient_checkpointing()
+        return len(blocks) - min(skip_last, len(blocks))
+
+    def compile_blocks(self):
+        # compile the block body; checkpointing wraps it unchanged
+        for blk in self.dit.blocks:
+            blk._forward = torch.compile(blk._forward)
+        return len(self.dit.blocks)
 
     def predict(self, noisy, sigmas, text):
         b, _, h, w = noisy.shape

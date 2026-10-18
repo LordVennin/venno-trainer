@@ -197,9 +197,20 @@
                                 <label><input type="checkbox" data-bind="training.gradient_checkpointing"> Gradient Checkpointing</label>
                                 <small>Trades compute for VRAM. Recommended on.</small>
                             </div>
+                            <div class="form-group" data-show="training.gradient_checkpointing">
+                                <label>Blocks Without Checkpointing</label>
+                                <input type="number" data-bind="training.ckpt_skip_blocks" min="0" max="64">
+                                <small>Spends spare VRAM on speed: these blocks keep their activations instead of recomputing them. Raise it while the console's peak VRAM stays under ~22 GB.</small>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label><input type="checkbox" data-bind="training.compile"> torch.compile (experimental)</label>
+                                <small>Compiles the transformer blocks: typically faster steps after a slow first step per bucket shape. Falls back to normal mode if compiling fails.</small>
+                            </div>
                             <div class="form-group">
                                 <label><input type="checkbox" data-bind="training.fp8_base"> fp8 Base Weights</label>
-                                <small>Stores the frozen DiT weights in 8 bits (about half the VRAM). The LoRA trains in full precision.</small>
+                                <small>Memory option, not a speedup: stores the frozen DiT in 8 bits (about half the VRAM) at a small speed cost. The LoRA trains in full precision.</small>
                             </div>
                             <div class="form-group" data-model="anima">
                                 <label><input type="checkbox" data-bind="training.flash_attn"> Flash Attention</label>
@@ -445,8 +456,10 @@
                             <div class="progress-line">
                                 <span id="prog-step">Step –</span>
                                 <span id="prog-loss">Loss –</span>
+                                <span id="prog-vram" title="Peak VRAM allocated by training (samples excluded)">VRAM –</span>
                                 <span id="prog-eta">ETA –</span>
                             </div>
+                            <div id="prog-hint" class="hint" style="margin-bottom:6px;"></div>
                             <div class="progress-bar"><div id="prog-fill"></div></div>
                             <canvas id="loss-chart"></canvas>
                         </div>

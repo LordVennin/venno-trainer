@@ -44,9 +44,29 @@ Then open **⚙️ Global Settings**:
 Caching runs first, one model at a time: the VAE encodes every image, then the text encoder
 encodes every caption, and both are unloaded before the DiT loads. So MOSS's 9B Qwen3.5
 encoder (~18 GB in bf16) never shares the GPU with its 5.1B DiT (~10 GB in bf16). LoRA training
-with gradient checkpointing then fits on a 4090 at 1024². If it does not (bigger batches or
+with gradient checkpointing should then fit on a 4090 at 1024². If it does not (bigger batches or
 resolutions), enable **fp8 Base Weights**: it stores the frozen DiT in 8 bits (about half the
 VRAM) while the LoRA trains in full precision. Anima (2B DiT) fits with room to spare.
+
+## Speed on a single 4090
+
+Always on: content-keyed caches (each dataset is encoded once per model), bf16 with PyTorch's
+flash-attention kernels, TF32 for the fp32 parts (MOSS VAE), cuDNN autotuning for VAE caching,
+length-sorted caption encoding (MOSS encodes equal-length captions in one batch instead of one at
+a time), the next batch loaded in the background while the GPU trains, fused AdamW and an
+allocator setting that avoids fragmentation OOMs. The console shows peak VRAM, and the progress
+area tells you when VRAM is going unused.
+
+Options to try, in this order:
+1. **Blocks Without Checkpointing**: skips recomputing the last N blocks. Raise it until the peak
+   VRAM shown in the console is around 21–22 GB. Anima, with its small DiT, has the most room.
+2. **Batch size**: larger batches use the GPU better, if VRAM allows.
+3. **torch.compile** (experimental): compiles the transformer blocks. The first step at each new
+   bucket shape is slow, the rest are faster. It falls back to normal mode if compiling fails.
+
+**fp8 base weights** save memory but are slightly slower, so only use them when a setting would
+not otherwise fit. `setup.sh` installs `flash-linear-attention`, which speeds up the MOSS text
+encoder while captions are cached.
 
 ## Datasets
 

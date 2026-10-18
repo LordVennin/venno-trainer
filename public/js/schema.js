@@ -92,6 +92,8 @@
         mixed_precision: "bf16",
         save_precision: "bf16",
         gradient_checkpointing: true,
+        ckpt_skip_blocks: 0,
+        compile: false,
         grad_accum: 1,
         max_grad_norm: 1.0,
         flash_attn: false,

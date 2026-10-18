@@ -105,5 +105,62 @@ class MossEquivalence(unittest.TestCase):
         self.assertTrue(bool((s[1:] < s[:-1]).all()))
 
 
+class CheckpointSkipTests(unittest.TestCase):
+    """Partial gradient checkpointing must not change the gradients."""
+
+    def grads(self, model, run, targets):
+        from venno.lora import LoRANetwork
+
+        torch.manual_seed(1)
+        net = LoRANetwork(targets, 4, 4)
+        with torch.no_grad():
+            for lora in net.loras.values():
+                lora.lora_up.weight.normal_(0, 0.1)
+        net.apply_to()
+        model.train()
+        run().pow(2).mean().backward()
+        net.remove()
+        return [p.grad.clone() for p in net.parameters()]
+
+    def test_moss(self):
+        torch.manual_seed(0)
+        m = MossImageTransformer(MossImageParams(dim=64, ffn_dim=96, num_heads=4, num_layers=4, text_dim=32, freq_dim=32))
+        x, t, text = torch.randn(1, 128, 3, 4), torch.tensor([400.0]), torch.randn(1, 5, 32)
+        targets = [(f"l{i}", layer.proj["qkv"]) for i, layer in enumerate(m.layers)]
+        results = []
+        for ckpt, skip in ((False, set()), (True, set()), (True, {2, 3})):
+            m.gradient_checkpointing, m.ckpt_skip = ckpt, skip
+            results.append(self.grads(m, lambda: m(x, t, text), targets))
+        for other in results[1:]:
+            for a, b in zip(results[0], other):
+                self.assertTrue(torch.allclose(a, b, atol=1e-6))
+
+    def test_anima(self):
+        from venno.models.anima import dit as D
+
+        torch.manual_seed(0)
+        m = D.MiniTrainDIT(
+            max_img_h=64, max_img_w=64, max_frames=8, in_channels=16, out_channels=16, patch_spatial=2,
+            patch_temporal=1, model_channels=128, num_blocks=3, num_heads=4, crossattn_emb_channels=1024,
+            pos_emb_cls="rope3d", pos_emb_learnable=True, use_adaln_lora=True, adaln_lora_dim=32,
+            rope_h_extrapolation_ratio=4.0, rope_w_extrapolation_ratio=4.0, rope_enable_fps_modulation=False,
+        )
+        with torch.no_grad():
+            for blk in m.blocks:
+                for seq in (blk.adaln_modulation_self_attn, blk.adaln_modulation_cross_attn, blk.adaln_modulation_mlp):
+                    seq[2].weight.normal_(0, 0.05)
+        x, t, ctx = torch.randn(1, 16, 1, 4, 4), torch.tensor([0.3]), torch.randn(1, 7, 1024)
+        pad = torch.zeros(1, 1, 4, 4)
+        targets = [(f"b{i}", blk.self_attn.q_proj) for i, blk in enumerate(m.blocks)]
+        results = []
+        for mode in ("none", "all", "skip"):
+            for i, blk in enumerate(m.blocks):
+                blk.gradient_checkpointing = mode == "all" or (mode == "skip" and i == 0)
+            results.append(self.grads(m, lambda: m(x, t, ctx, padding_mask=pad), targets))
+        for other in results[1:]:
+            for a, b in zip(results[0], other):
+                self.assertTrue(torch.allclose(a, b, atol=1e-6))
+
+
 if __name__ == "__main__":
     unittest.main()

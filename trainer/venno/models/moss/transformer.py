@@ -2,7 +2,8 @@
 
 Ported from ostris/ai-toolkit (extensions_built_in/diffusion_models/moss_image/
 src/transformer.py, MIT). The ai-toolkit model mixin and quantized-checkpoint
-import are removed; the model math is unchanged.
+import are removed and layers can opt out of gradient checkpointing
+(ckpt_skip); the model math is unchanged.
 
 Port of ``MOSSImageTransformer`` from the vendor's ``pipeline_moss_image.py``
 in the Comfy-Org/MOSS-Image key layout: the vendor's names with each block's
@@ -264,6 +265,7 @@ class MossImageTransformer(nn.Module):
         self.final_linear_video = nn.Linear(dim, params.latent_channels, bias=False)
         self.video_head_modulation = nn.Linear(dim, 2 * dim)
         self.gradient_checkpointing = False
+        self.ckpt_skip = set()  # layer indices that run without checkpointing
         self._bands = {}
 
     @property
@@ -484,6 +486,8 @@ class MossImageTransformer(nn.Module):
                 captured[index] = slot[0]
             elif reuse_refs:
                 x = layer(x, rope, modulation, joint_mask, kv_cache=ref_kv_cache["kv"][index])
+            elif index in self.ckpt_skip:
+                x = layer(x, rope, modulation, joint_mask, isolate_split)
             else:
                 x = self._ckpt(layer, x, rope, modulation, joint_mask, isolate_split)
         if capture:

@@ -118,19 +118,36 @@ class MossAdapter(base.ModelAdapter):
         self.text_encoder = None
         base.free_memory()
 
+    text_chunk = 64  # with length-sorted captions, most chunks hold equal-length runs
+
+    def _token_ids(self, text):
+        prompt = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": text}], tokenize=False,
+            add_generation_prompt=True, enable_thinking=True,
+        )
+        return self.tokenizer(prompt, truncation=True, max_length=MAX_TEXT_TOKENS)["input_ids"]
+
+    def text_sort_key(self, text):
+        return len(self._token_ids(text))
+
     @torch.no_grad()
-    def encode_text(self, texts):
-        out = []
-        # one unpadded forward per prompt (padding leaks into the gated-delta recurrence)
-        for text in texts:
-            prompt = self.tokenizer.apply_chat_template(
-                [{"role": "user", "content": text}], tokenize=False,
-                add_generation_prompt=True, enable_thinking=True,
-            )
-            ids = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=MAX_TEXT_TOKENS)["input_ids"]
-            with torch.autocast(self.device.type, dtype=self.dtype, enabled=self.device.type == "cuda"):
-                states = self.text_encoder(input_ids=ids.to(self.device), use_cache=False).last_hidden_state[0]
-            out.append({"embeds": states.to(torch.bfloat16).cpu()})
+    def encode_text(self, texts, max_batch=16, max_tokens=8192):
+        """Unpadded forwards (padding leaks into the gated-delta recurrence), but
+        prompts with the same token count share one batched forward."""
+        ids = [self._token_ids(t) for t in texts]
+        by_len = {}
+        for i, seq in enumerate(ids):
+            by_len.setdefault(len(seq), []).append(i)
+        out = [None] * len(texts)
+        for length, idx in by_len.items():
+            per = max(1, min(max_batch, max_tokens // max(1, length)))
+            for k in range(0, len(idx), per):
+                chunk = idx[k:k + per]
+                batch = torch.tensor([ids[i] for i in chunk], device=self.device)
+                with torch.autocast(self.device.type, dtype=self.dtype, enabled=self.device.type == "cuda"):
+                    states = self.text_encoder(input_ids=batch, use_cache=False).last_hidden_state
+                for j, i in enumerate(chunk):
+                    out[i] = {"embeds": states[j].to(torch.bfloat16).cpu()}
         return out
 
     def collate_text(self, conds):
@@ -191,8 +208,18 @@ class MossAdapter(base.ModelAdapter):
                     targets.append((name, layer.proj[child]))
         return targets
 
-    def enable_gradient_checkpointing(self):
+    def enable_gradient_checkpointing(self, skip_last=0):
+        """Checkpoint every block except the last `skip_last` (spare VRAM buys speed)."""
         self.dit.enable_gradient_checkpointing()
+        n = len(self.dit.layers)
+        self.dit.ckpt_skip = set(range(n - min(skip_last, n), n))
+        return n - len(self.dit.ckpt_skip)
+
+    def compile_blocks(self):
+        blocks = list(self.dit.layers) + list(self.dit.text_embedder.blocks)
+        for blk in blocks:
+            blk.compile()
+        return len(blocks)
 
     def predict(self, noisy, sigmas, text):
         return self.dit(noisy, sigmas * NUM_TRAIN_TIMESTEPS, text["embeds"], text["mask"])

@@ -18,6 +18,9 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+# fewer fragmentation OOMs with changing bucket shapes; must be set before CUDA starts
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import numpy as np
 import torch
 from PIL.PngImagePlugin import PngInfo
@@ -93,6 +96,12 @@ class Trainer:
         self.device = torch.device(dev)
         if self.device.type == "cpu":
             log("WARNING: no CUDA GPU found, training on CPU (only useful for tests).")
+        else:
+            # TF32 tensor cores for the fp32 parts (MOSS VAE, loss); cuDNN picks the
+            # fastest conv kernels per bucket shape (VAE caching)
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
         self.dtype = torch.bfloat16 if self.device.type == "cuda" and self.t.get("mixed_precision") != "fp32" else torch.float32
         if os.environ.get("VENNO_DTYPE") == "bf16":  # CPU smoke tests with real-size models
             self.dtype = torch.bfloat16
@@ -209,8 +218,10 @@ class Trainer:
         log(f"Caching {len(todo)} text embeddings...")
         if not self.live_text:
             self.adapter.load_text_encoder()
+        # similar lengths together: less padding (Anima), equal-length batches (MOSS)
+        todo.sort(key=self.adapter.text_sort_key)
         progress = Progress(len(todo), desc="caching text")
-        bs = 16
+        bs = self.adapter.text_chunk
         for k in range(0, len(todo), bs):
             check_stop()
             chunk = todo[k:k + bs]
@@ -246,7 +257,12 @@ class Trainer:
             missing = self.network.load_internal_state_dict(sd, strict=False)
             log(f"Initialized LoRA from {init}" + (f" ({len(missing)} modules not in file)" if missing else ""))
         if self.t.get("gradient_checkpointing", True):
-            self.adapter.enable_gradient_checkpointing()
+            skip = max(0, intv(self.t.get("ckpt_skip_blocks"), 0))
+            n = self.adapter.enable_gradient_checkpointing(skip)
+            if skip:
+                log(f"Gradient checkpointing on {n} blocks ({skip} run without it)")
+        if self.t.get("compile"):
+            self.compile_blocks()
         params = self.network.trainable_parameters()
         self.optimizer = create_optimizer(
             self.t.get("optimizer", "AdamW8bit"), params, num(self.t.get("lr"), 1e-4),
@@ -257,7 +273,43 @@ class Trainer:
             intv(self.t.get("lr_warmup_steps"), 0), intv(self.t.get("lr_cycles"), 1),
         )
 
+    def compile_blocks(self):
+        try:
+            import torch._dynamo as dynamo
+
+            dynamo.config.suppress_errors = True  # fall back to eager instead of crashing
+            for name in ("cache_size_limit", "recompile_limit"):
+                if hasattr(dynamo.config, name):
+                    setattr(dynamo.config, name, 64)  # one graph per bucket shape
+            n = self.adapter.compile_blocks()
+            log(f"torch.compile enabled for {n} blocks (the first steps of each new bucket shape are slow)")
+        except Exception as e:
+            log(f"torch.compile unavailable ({e}); continuing without it")
+
     # ------------------------------------------------------------- batches
+    def iter_groups(self, batches, epoch, rng):
+        """Gradient-accumulation groups of loaded batches; the next group is read
+        from the cache in a background thread while the GPU trains on this one."""
+        groups = [batches[k:k + self.accum] for k in range(0, len(batches), self.accum)]
+
+        def load(group):
+            return [self.load_batch(samples, epoch, rng) for samples in group]
+
+        if not groups:
+            return
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(load, groups[0])
+            for i in range(len(groups)):
+                loaded = pending.result()
+                if i + 1 < len(groups):
+                    pending = pool.submit(load, groups[i + 1])
+                yield loaded
+
+    def vram_note(self):
+        if self.device.type != "cuda":
+            return None
+        return torch.cuda.max_memory_allocated() / 1e9
+
     def load_batch(self, samples, epoch, rng):
         latents, conds, weights = [], [], []
         for s in samples:
@@ -276,7 +328,10 @@ class Trainer:
             weights.append(item.folder.loss_weight)
         if self.live_text:
             conds = self.adapter.encode_text(conds)
-        x = torch.stack(latents).to(self.device, torch.float32)
+        x = torch.stack(latents)
+        if self.device.type == "cuda":
+            x = x.pin_memory()
+        x = x.to(self.device, torch.float32, non_blocking=True)
         return x, self.adapter.collate_text(conds), torch.tensor(weights, device=self.device)
 
     def sample_sigmas(self, n, rng_t):
@@ -408,6 +463,8 @@ class Trainer:
             info.add_text("parameters", f"{text}\nNegative prompt: {neg_text}\nSteps: {steps}, CFG scale: {cfg}, Seed: {seed}, Size: {w}x{h}, Shift: {shift}")
             img.save(os.path.join(self.samples_dir, f"{self.name}_{tag}_{i:02d}_{seed}.png"), pnginfo=info)
         self.adapter.unload_vae()
+        if self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats()
         if was_training:
             self.adapter.dit.train()
             self.network.train()
@@ -437,6 +494,9 @@ class Trainer:
 
         self.adapter.dit.train()
         self.network.train()
+        start_step = step
+        if self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats()
         progress = Progress(self.total_steps, start=step)
         recent = []
         epoch = start_epoch
@@ -446,11 +506,10 @@ class Trainer:
             # resumed mid-epoch: skip the batches this epoch already used
             skip = (step - epoch * self.steps_per_epoch) * self.accum if step > epoch * self.steps_per_epoch else 0
             batches = batches[skip:]
-            for k in range(0, len(batches), self.accum):
-                group = batches[k:k + self.accum]
+            groups = self.iter_groups(batches, epoch, rng)
+            for group in groups:
                 total_loss = 0.0
-                for samples in group:
-                    x, text, weights = self.load_batch(samples, epoch, rng)
+                for x, text, weights in group:
                     loss = self.train_step(x, text, weights, rng_t) / len(group)
                     loss.backward()
                     total_loss += loss.detach().item()
@@ -463,7 +522,10 @@ class Trainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 step += 1
                 recent = (recent + [total_loss])[-50:]
-                progress.update(step, sum(recent) / len(recent))
+                progress.update(step, sum(recent) / len(recent), self.vram_note())
+                if step == start_step + 2 and self.device.type == "cuda":
+                    total = torch.cuda.get_device_properties(0).total_memory / 1e9
+                    log(f"Peak VRAM while training: {self.vram_note():.1f} of {total:.1f} GB")
 
                 if not by_epochs:
                     if step % save_every == 0 and step < self.total_steps:
@@ -473,6 +535,7 @@ class Trainer:
                     if self.s.get("enabled", True) and step % sample_every == 0 and step < self.total_steps:
                         self.generate_samples(f"{step:06d}")
                 if step >= self.total_steps or _stop_requested:
+                    groups.close()
                     break
             else:
                 epoch += 1  # only a fully used epoch counts, so a resume picks up mid-epoch

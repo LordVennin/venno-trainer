@@ -29,6 +29,8 @@ def create_optimizer(name, params, lr, weight_decay, extra_args=""):
     kwargs.update(parse_optimizer_args(extra_args))
     key = name.lower()
     if key == "adamw":
+        if all(p.is_cuda for p in params):
+            kwargs.setdefault("fused", True)  # one kernel for the whole update
         return torch.optim.AdamW(params, lr=lr, **kwargs)
     if key in ("adamw8bit", "pagedadamw8bit"):
         try:

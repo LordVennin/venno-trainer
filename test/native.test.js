@@ -75,3 +75,11 @@ test("progress line from the trainer is parsed", () => {
   assert.deepStrictEqual(p, { step: 120, total: 1000, elapsed: "01:23", eta: "10:00", loss: 0.0912 });
   assert.strictEqual(parseProgress("caching latents: 50%| | 2/4 [00:01<00:01, 2.0it/s, avr_loss=0]").step, 2);
 });
+
+test("peak VRAM is read from the training progress line", () => {
+  const p = parseProgress("steps:  10%|██ | 30/300 [00:30<04:30, 1.00it/s, avr_loss=0.05, vram=13.4G]");
+  assert.strictEqual(p.vram, 13.4);
+  assert.strictEqual(p.loss, 0.05);
+  const r = native.buildRun(S.defaultJob("moss_image"), settings, "/j");
+  assert.strictEqual(r.env.PYTORCH_CUDA_ALLOC_CONF, "expandable_segments:True");
+});

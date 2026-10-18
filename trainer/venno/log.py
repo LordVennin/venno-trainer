@@ -29,7 +29,7 @@ class Progress:
         self.start_step = start
         self.start_time = time.time()
 
-    def update(self, step, loss=None):
+    def update(self, step, loss=None, vram_gb=None):
         global _progress_active
         elapsed = time.time() - self.start_time
         done = step - self.start_step
@@ -40,6 +40,8 @@ class Progress:
         speed = f"{rate:.2f}it/s" if rate >= 1 else f"{(1 / rate) if rate else 0:.2f}s/it"
         # only training bars carry a loss (the UI charts lines with avr_loss)
         tail = f", avr_loss={loss:.4g}" if loss is not None else ""
+        if vram_gb is not None:
+            tail += f", vram={vram_gb:.1f}G"
         sys.stdout.write(
             f"\r{self.desc}: {int(frac * 100):3d}%|{bar}| {step}/{self.total} "
             f"[{_fmt_time(elapsed)}<{_fmt_time(eta)}, {speed}{tail}]"

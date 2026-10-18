@@ -202,6 +202,39 @@ class MossTests(unittest.TestCase):
         for k in sd:
             self.assertTrue(torch.equal(sd[k], back[k]), k)
 
+    def test_batched_caption_encoding_matches_single(self):
+        run = run_config(F.base_job("moss_image", [{"path": "/x"}]), self.paths, os.path.join(self.tmp, "o"), os.path.join(self.tmp, "c"))
+        a = T.Trainer(run).adapter
+        a.load_text_encoder()
+        texts = ["a red cat", "a blue dog", "a big red cat", "a green car", "a red cat sitting on a mat"]
+        lengths = [a.text_sort_key(t) for t in texts]
+        self.assertGreater(len(lengths), len(set(lengths)))  # some share a length, so they batch
+        batched = a.encode_text(texts)
+        single = [a.encode_text([t], max_batch=1)[0] for t in texts]
+        for b, s1 in zip(batched, single):
+            self.assertEqual(b["embeds"].shape, s1["embeds"].shape)
+            self.assertLess((b["embeds"].float() - s1["embeds"].float()).abs().max().item(), 1e-2)
+
+    def test_compile_and_checkpoint_skip(self):
+        out = os.path.join(self.tmp, "out_compile")
+        job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}],
+                         duration_unit="steps", max_steps=3, save_every_steps=10, optimizer="AdamW", lr="1e-3",
+                         output_name="moss_compiled", workers=1, compile=True, ckpt_skip_blocks=1)
+        job["dataset"].update(resolutions="64", batch_sizes="1", min_bucket=32, max_bucket=128, bucket_steps=16)
+        job["network"].update(dim=4, alpha=4)
+        job["sampling"]["enabled"] = False
+        lines = []
+        orig = T.log
+        T.log = lambda *a: (lines.append(" ".join(map(str, a))), orig(*a))
+        try:
+            train(run_config(job, self.paths, out, os.path.join(self.tmp, "cache")))
+        finally:
+            T.log = orig
+        self.assertTrue(any("torch.compile enabled" in l for l in lines), lines)
+        self.assertTrue(any("checkpointing on 2 blocks (1 run without it)" in l for l in lines), lines)
+        sd = load_file(os.path.join(out, "moss_compiled.safetensors"))
+        self.assertGreater(sd["diffusion_model.layers.0.proj.q.lora_B.weight"].abs().sum(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
