@@ -1,0 +1,4 @@
+node_modules/
+jobs/
+settings.json
+*.log

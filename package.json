@@ -1,0 +1,20 @@
+{
+  "name": "venno-trainer",
+  "version": "0.1.0",
+  "description": "Personal multi-model LoRA training UI (Anima via sd-scripts, MOSS-Image via ai-toolkit)",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "express": "^4.21.2",
+    "js-yaml": "^4.1.0",
+    "ws": "^8.18.0"
+  }
+}

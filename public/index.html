@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Venno Trainer</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+    <link rel="stylesheet" href="css/style.css">
+    <script>
+        // apply the saved theme before first paint
+        (function () {
+            try {
+                const t = localStorage.getItem("ui_theme");
+                if (t) document.documentElement.setAttribute("data-theme", t);
+            } catch (e) { }
+        })();
+    </script>
+</head>
+
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div>
+                    <h1>🎯 Jobs</h1>
+                    <div class="brand-sub">Venno Trainer</div>
+                </div>
+                <button id="btn-new-job" class="btn btn-primary btn-sm">+ New</button>
+            </div>
+            <div id="job-list" class="job-list"></div>
+            <div class="sidebar-footer">
+                <button id="btn-global-settings" class="btn btn-ghost btn-block">⚙️ Global Settings</button>
+            </div>
+        </aside>
+
+        <!-- Main -->
+        <main class="main-content">
+            <div id="empty-state" class="empty-state">
+                <div class="empty-icon">🧠</div>
+                <h2>No Job Selected</h2>
+                <p>Create a new training job or select one from the sidebar</p>
+            </div>
+
+            <div id="job-editor" class="job-editor hidden">
+                <header class="editor-header">
+                    <div class="editor-title">
+                        <h2 id="job-title">Job</h2>
+                        <span id="job-model-badge" class="badge"></span>
+                    </div>
+                    <div class="editor-actions">
+                        <button id="btn-save" class="btn btn-success hidden">💾 Save</button>
+                        <button id="btn-discard" class="btn btn-danger hidden">Discard</button>
+                        <button id="btn-clone" class="btn">Clone</button>
+                        <button id="btn-run" class="btn btn-primary">▶ Train</button>
+                        <button id="btn-stop" class="btn btn-danger hidden">⏹ Stop</button>
+                        <button id="btn-delete" class="btn btn-danger" title="Delete job">🗑</button>
+                    </div>
+                </header>
+
+                <div class="tabs" id="job-tabs">
+                    <button class="tab active" data-tab="training">Training</button>
+                    <button class="tab" data-tab="dataset">Dataset</button>
+                    <button class="tab" data-tab="network">Network</button>
+                    <button class="tab" data-tab="prompts">Prompts</button>
+                    <button class="tab" data-tab="samples">Samples</button>
+                    <button class="tab" data-tab="console">Console</button>
+                    <button class="tab" data-tab="advanced">Advanced</button>
+                    <button class="tab" data-tab="settings" title="Job settings">⚙️</button>
+                </div>
+                <div id="issues" class="issues"></div>
+
+                <div class="tab-content">
+                    <!-- ============================================ Training -->
+                    <div id="tab-training" class="tab-pane">
+                        <h4>Model</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Model</label>
+                                <input type="text" id="model-label" disabled>
+                                <small>Clone the job to train the same dataset on another model.</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Variant</label>
+                                <select id="cfg-variant" data-bind="variant"></select>
+                            </div>
+                        </div>
+                        <div data-backend="aitk">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label><input type="checkbox" data-bind="training.quantize"> Quantize Transformer</label>
+                                    <select data-bind="training.qtype" data-options="qtype" data-show="training.quantize"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label><input type="checkbox" data-bind="training.quantize_te"> Quantize Text Encoder (Qwen3.5-9B)</label>
+                                    <select data-bind="training.qtype_te" data-options="qtype" data-show="training.quantize_te"></select>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label><input type="checkbox" data-bind="training.low_vram"> Low VRAM</label>
+                                    <small>Keeps parts on CPU while loading/quantizing. Recommended on 24 GB cards.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label><input type="checkbox" data-bind="training.layer_offloading"> Layer Offloading</label>
+                                    <small>Streams transformer layers from system RAM. Slower, much less VRAM.</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <h4>Optimization</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Learning Rate</label>
+                                <input type="text" data-bind="training.lr" placeholder="1e-4">
+                            </div>
+                            <div class="form-group" data-backend="anima" data-show="network.train_te&network.type!=full_finetune">
+                                <label>Text Encoder LR</label>
+                                <input type="text" data-bind="training.te_lr" placeholder="5e-5">
+                            </div>
+                            <div class="form-group">
+                                <label>Optimizer</label>
+                                <select data-bind="training.optimizer" data-options="optimizer"></select>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>LR Scheduler</label>
+                                <select data-bind="training.lr_scheduler" data-options="lr_scheduler"></select>
+                            </div>
+                            <div class="form-group">
+                                <label>LR Warmup Steps</label>
+                                <input type="number" data-bind="training.lr_warmup_steps" min="0">
+                            </div>
+                            <div class="form-group" data-show="training.lr_scheduler=cosine_with_restarts">
+                                <label>Restart Cycles</label>
+                                <input type="number" data-bind="training.lr_cycles" min="1">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Weight Decay</label>
+                                <input type="number" data-bind="training.weight_decay" step="0.0001" min="0">
+                            </div>
+                            <div class="form-group">
+                                <label>Extra Optimizer Args</label>
+                                <input type="text" data-bind="training.optimizer_args" placeholder="e.g. betas=0.9,0.99 decouple=True">
+                                <small>Space-separated key=value pairs.</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Max Grad Norm</label>
+                                <input type="number" data-bind="training.max_grad_norm" step="0.1" min="0">
+                            </div>
+                            <div class="form-group">
+                                <label>Seed</label>
+                                <input type="number" data-bind="training.seed">
+                            </div>
+                        </div>
+
+                        <h4>Training Schedule</h4>
+                        <div class="form-group">
+                            <label>Duration Unit</label>
+                            <div class="checkbox-group">
+                                <label><input type="radio" name="duration-unit" value="epochs" data-bind="training.duration_unit"> Epochs</label>
+                                <label><input type="radio" name="duration-unit" value="steps" data-bind="training.duration_unit"> Steps</label>
+                            </div>
+                            <small data-backend="aitk" data-show="training.duration_unit=epochs">ai-toolkit trains by steps: epochs are converted with the dataset scan (images × repeats ÷ batch). <span id="epoch-steps-hint"></span></small>
+                        </div>
+                        <div class="form-row" data-show="training.duration_unit=epochs">
+                            <div class="form-group">
+                                <label>Max Epochs</label>
+                                <input type="number" data-bind="training.max_epochs" min="1">
+                            </div>
+                            <div class="form-group">
+                                <label>Save Every N Epochs</label>
+                                <input type="number" data-bind="training.save_every_epochs" min="1">
+                            </div>
+                        </div>
+                        <div class="form-row" data-show="training.duration_unit=steps">
+                            <div class="form-group">
+                                <label>Max Steps</label>
+                                <input type="number" data-bind="training.max_steps" min="1">
+                            </div>
+                            <div class="form-group">
+                                <label>Save Every N Steps</label>
+                                <input type="number" data-bind="training.save_every_steps" min="1">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Keep Last N Saves</label>
+                                <input type="number" data-bind="training.keep_last_n" min="0">
+                                <small>0 = keep all.</small>
+                            </div>
+                            <div class="form-group" data-backend="anima">
+                                <label>Keep Last N Save States</label>
+                                <input type="number" data-bind="training.keep_last_n_states" min="0">
+                                <small>Training-state folders for resuming. 0 = keep all.</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Output Name</label>
+                                <input type="text" data-bind="training.output_name">
+                            </div>
+                        </div>
+
+                        <h4>Performance</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Mixed Precision</label>
+                                <select data-bind="training.mixed_precision" data-options="mixed_precision"></select>
+                            </div>
+                            <div class="form-group">
+                                <label>Save Precision</label>
+                                <select data-bind="training.save_precision" data-options="save_precision"></select>
+                            </div>
+                            <div class="form-group">
+                                <label>Gradient Accumulation</label>
+                                <input type="number" data-bind="training.grad_accum" min="1">
+                            </div>
+                            <div class="form-group" data-backend="anima">
+                                <label>DataLoader Workers</label>
+                                <input type="number" data-bind="training.workers" min="0" max="32">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label><input type="checkbox" data-bind="training.gradient_checkpointing"> Gradient Checkpointing</label>
+                                <small>Trades compute for VRAM. Recommended on.</small>
+                            </div>
+                            <div class="form-group" data-backend="anima">
+                                <label><input type="checkbox" data-bind="training.flash_attn"> Flash Attention</label>
+                                <small>Requires the flash-attn package.</small>
+                            </div>
+                            <div class="form-group" data-backend="anima">
+                                <label>Blocks to Swap</label>
+                                <input type="number" data-bind="training.blocks_to_swap" min="0" max="26">
+                                <small>Moves DiT blocks to RAM to save VRAM. 0 = off.</small>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>GPU(s)</label>
+                            <div class="inline">
+                                <input type="text" data-bind="training.gpu_ids" placeholder="0" style="max-width: 160px;">
+                                <span id="gpu-chips" class="inline"></span>
+                            </div>
+                            <small data-backend="anima">Comma-separated GPU ids. More than one uses DDP via accelerate.</small>
+                            <small data-backend="aitk">ai-toolkit trains on one GPU; the first id is used.</small>
+                        </div>
+
+                        <h4>Caching</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label><input type="checkbox" data-bind="training.cache_latents"> Cache Latents to Disk</label>
+                                <small>Pre-encodes images once. Recommended for large datasets.</small>
+                            </div>
+                            <div class="form-group">
+                                <label><input type="checkbox" data-bind="training.cache_te"> Cache Text Encoder Outputs</label>
+                                <small>Encodes captions once and frees the text encoder. Caption dropout still works; tag dropout and caption shuffling need this off.</small>
+                            </div>
+                        </div>
+
+                        <h4>Timesteps &amp; Loss</h4>
+                        <div class="form-row" data-backend="anima">
+                            <div class="form-group">
+                                <label>Timestep Sample Method</label>
+                                <select data-bind="training.timestep" data-options="timestep"></select>
+                            </div>
+                            <div class="form-group">
+                                <label>Flow Shift</label>
+                                <input type="number" data-bind="training.flow_shift" step="0.1" min="0">
+                            </div>
+                        </div>
+                        <div class="form-row" data-backend="aitk">
+                            <div class="form-group">
+                                <label>Timestep Type</label>
+                                <select data-bind="training.timestep" data-options="timestep"></select>
+                            </div>
+                            <div class="form-group">
+                                <label>Timestep Bias</label>
+                                <select data-bind="training.timestep_bias">
+                                    <option value="balanced">Balanced</option>
+                                    <option value="content">High noise (content)</option>
+                                    <option value="style">Low noise (style)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Loss Type</label>
+                                <select data-bind="training.loss_type">
+                                    <option value="mse">Mean squared error</option>
+                                    <option value="mae">Mean absolute error</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ============================================ Dataset -->
+                    <div id="tab-dataset" class="tab-pane hidden">
+                        <h4>Global Dataset Settings</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Resolution(s)</label>
+                                <input type="text" data-bind="dataset.resolutions" placeholder="e.g. 512, 768, 1024">
+                                <small data-backend="anima">Comma-separate for multi-resolution training (one dataset block per resolution).</small>
+                                <small data-backend="aitk">ai-toolkit buckets every folder at each listed resolution.</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Batch Size(s)</label>
+                                <input type="text" data-bind="dataset.batch_sizes" placeholder="e.g. 4, 2">
+                                <small data-backend="anima">One per resolution; the last value repeats.</small>
+                                <small data-backend="aitk">ai-toolkit uses the first value.</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Caption Extension</label>
+                                <input type="text" data-bind="dataset.caption_ext" placeholder=".txt">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label><input type="checkbox" data-bind="dataset.enable_bucket"> Aspect Ratio Bucketing</label>
+                            </div>
+                            <div class="form-group" data-backend="anima">
+                                <label><input type="checkbox" data-bind="dataset.bucket_no_upscale"> Do Not Upscale Images</label>
+                            </div>
+                        </div>
+                        <div class="form-row" data-backend="anima" data-show="dataset.enable_bucket">
+                            <div class="form-group">
+                                <label>Min Bucket Resolution</label>
+                                <input type="number" data-bind="dataset.min_bucket" min="64" step="64">
+                            </div>
+                            <div class="form-group">
+                                <label>Max Bucket Resolution</label>
+                                <input type="number" data-bind="dataset.max_bucket" min="256" step="64">
+                            </div>
+                            <div class="form-group">
+                                <label>Bucket Resolution Steps</label>
+                                <input type="number" data-bind="dataset.bucket_steps" min="8" step="8">
+                            </div>
+                        </div>
+
+                        <h4>Dataset Folders</h4>
+                        <div id="dataset-summary" class="dataset-summary"></div>
+                        <div class="dataset-toolbar">
+                            <button id="btn-add-dataset" class="btn btn-primary btn-sm">+ Add Dataset</button>
+                            <button id="btn-add-subfolders" class="btn btn-sm" title="Add every subfolder of a parent folder">+ Add Subfolders…</button>
+                            <button id="btn-bulk-edit" class="btn btn-sm">Bulk Edit…</button>
+                            <button id="btn-rescan" class="btn btn-sm" title="Recount images and captions">↻ Rescan</button>
+                            <button id="btn-expand-all" class="btn btn-ghost btn-sm">Expand all</button>
+                            <button id="btn-collapse-all" class="btn btn-ghost btn-sm">Collapse all</button>
+                            <label class="inline hint"><input type="checkbox" id="chk-select-all"> Select all</label>
+                            <input type="text" id="dataset-filter" placeholder="Filter folders…">
+                        </div>
+                        <div id="dataset-list" class="dataset-list"></div>
+                    </div>
+
+                    <!-- ============================================ Network -->
+                    <div id="tab-network" class="tab-pane hidden">
+                        <div class="form-group">
+                            <label>Training Type</label>
+                            <select data-bind="network.type" data-options="network_type"></select>
+                        </div>
+                        <div data-show="network.type!=full_finetune">
+                            <h4>Network</h4>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Network Dim (Rank)</label>
+                                    <input type="number" data-bind="network.dim" min="1">
+                                    <small>Higher = more capacity, bigger file, more VRAM.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>Network Alpha</label>
+                                    <input type="number" data-bind="network.alpha" min="0" step="any">
+                                    <small>Scaling factor. Usually equal to dim.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>Network Dropout</label>
+                                    <input type="number" data-bind="network.dropout" min="0" max="1" step="0.05">
+                                    <small>0 = off.</small>
+                                </div>
+                            </div>
+                            <div class="form-group" data-backend="anima">
+                                <label><input type="checkbox" data-bind="network.train_te"> Also train the text encoder</label>
+                                <small>Usually off. Requires text encoder caching off.</small>
+                            </div>
+                            <div class="form-group" data-backend="anima">
+                                <label>Network Args</label>
+                                <input type="text" data-bind="network.network_args" placeholder="e.g. conv_dim=4 conv_alpha=4">
+                                <small>Space-separated key=value pairs passed to networks.lora_anima.</small>
+                            </div>
+                            <div class="form-group" data-backend="aitk">
+                                <label>Skip Layers Containing</label>
+                                <input type="text" data-bind="network.ignore_layers" placeholder="layers.22.">
+                                <small>Comma/space separated. MOSS samples with block 22 skipped on the CFG negative branch, so the default keeps the LoRA off it.</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Initialize From LoRA</label>
+                                <input type="text" data-bind="network.init_weights" placeholder="/path/to/lora.safetensors">
+                                <small>Start from existing LoRA weights (fresh optimizer). Usually blank.</small>
+                            </div>
+                        </div>
+
+                        <h4>Resume Training</h4>
+                        <div data-backend="anima">
+                            <div class="form-group">
+                                <label><input type="checkbox" data-bind="network.auto_resume"> Auto-resume from the last saved state</label>
+                                <small>Picks the newest *-state folder in this job's output.</small>
+                            </div>
+                            <div class="form-group" data-show="!network.auto_resume">
+                                <label>Resume State Folder</label>
+                                <input type="text" data-bind="network.resume_path" placeholder="/path/to/output/my_lora-000005-state">
+                            </div>
+                        </div>
+                        <div class="note" data-backend="aitk">ai-toolkit resumes automatically: re-running a job with the same output name continues from the newest checkpoint in its output folder.</div>
+                    </div>
+
+                    <!-- ============================================ Prompts -->
+                    <div id="tab-prompts" class="tab-pane hidden">
+                        <div class="section-card">
+                            <h4>In-Training Sampling</h4>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label><input type="checkbox" data-bind="sampling.enabled"> Enable Sampling</label>
+                                </div>
+                                <div class="form-group">
+                                    <label><input type="checkbox" data-bind="sampling.sample_first"> Sample before training starts</label>
+                                </div>
+                            </div>
+                            <div class="form-row" data-show="sampling.enabled">
+                                <div class="form-group" data-show="training.duration_unit=epochs">
+                                    <label>Sample Every N Epochs</label>
+                                    <input type="number" data-bind="sampling.every_epochs" min="1">
+                                </div>
+                                <div class="form-group" data-show="training.duration_unit=steps">
+                                    <label>Sample Every N Steps</label>
+                                    <input type="number" data-bind="sampling.every_steps" min="1">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="samples-header">
+                            <h4>Sample Prompts</h4>
+                            <div class="inline">
+                                <button id="btn-paste-prompts" class="btn btn-sm">Paste Many…</button>
+                                <button id="btn-add-prompt" class="btn btn-primary btn-sm">+ Add Prompt</button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Negative Prompt</label>
+                            <textarea data-bind="sampling.negative" rows="2" placeholder="Applied to every sample prompt"></textarea>
+                        </div>
+                        <div class="global-settings-bar">
+                            <div class="compact-input"><label>W</label><input type="number" data-bind="sampling.width" step="16"></div>
+                            <div class="compact-input"><label>H</label><input type="number" data-bind="sampling.height" step="16"></div>
+                            <div class="compact-input"><label>Steps</label><input type="number" data-bind="sampling.steps"></div>
+                            <div class="compact-input"><label>CFG</label><input type="number" data-bind="sampling.cfg" step="0.5"></div>
+                            <div class="compact-input"><label>Seed</label><input type="number" data-bind="sampling.seed"></div>
+                            <span class="hint">Defaults for new prompts</span>
+                            <button id="btn-apply-global" class="btn btn-primary btn-xs" style="margin-left:auto;">Apply to All</button>
+                        </div>
+                        <div id="prompt-list" class="prompt-list"></div>
+                        <p id="prompts-empty" class="hint">No sample prompts yet. Click "+ Add Prompt" to add one.</p>
+                    </div>
+
+                    <!-- ============================================ Samples -->
+                    <div id="tab-samples" class="tab-pane hidden" style="max-width:none;">
+                        <div class="samples-header">
+                            <h4>Generated Samples <span id="samples-count" class="chip"></span></h4>
+                            <div class="inline">
+                                <label class="hint">Size <input type="range" id="thumb-size" min="120" max="420" value="200"></label>
+                                <select id="samples-limit" style="width:auto;">
+                                    <option value="40">40 newest</option>
+                                    <option value="100" selected>100 newest</option>
+                                    <option value="400">400 newest</option>
+                                    <option value="all">All</option>
+                                </select>
+                                <button id="btn-delete-samples" class="btn btn-danger btn-sm hidden">🗑 Delete Selected</button>
+                                <button id="btn-open-samples" class="btn btn-ghost btn-sm">📂 Folder</button>
+                                <button id="btn-refresh-samples" class="btn btn-ghost btn-sm">🔄 Refresh</button>
+                            </div>
+                        </div>
+                        <details class="section-card" id="ckpt-details">
+                            <summary style="cursor:pointer;">Checkpoints <span id="ckpt-count" class="chip"></span></summary>
+                            <div id="ckpt-list" class="ckpt-list" style="margin-top:10px;"></div>
+                        </details>
+                        <div id="samples-grid" class="samples-grid"></div>
+                        <p id="samples-empty" class="hint">No sample images yet. They appear here during training.</p>
+                    </div>
+
+                    <!-- ============================================ Console -->
+                    <div id="tab-console" class="tab-pane hidden" style="max-width:none;">
+                        <div class="progress-wrap">
+                            <div class="progress-line">
+                                <span id="prog-step">Step –</span>
+                                <span id="prog-loss">Loss –</span>
+                                <span id="prog-eta">ETA –</span>
+                            </div>
+                            <div class="progress-bar"><div id="prog-fill"></div></div>
+                            <canvas id="loss-chart"></canvas>
+                        </div>
+                        <div class="console-header">
+                            <h4>Training Console</h4>
+                            <div class="inline">
+                                <label class="hint inline"><input type="checkbox" id="chk-autoscroll" checked> Auto-scroll</label>
+                                <button id="btn-clear-console" class="btn btn-ghost btn-sm">Clear</button>
+                            </div>
+                        </div>
+                        <pre id="console-output" class="console-output">Waiting for training to start...</pre>
+                    </div>
+
+                    <!-- ============================================ Advanced -->
+                    <div id="tab-advanced" class="tab-pane hidden">
+                        <h4>Config Overrides</h4>
+                        <div class="note">
+                            <span data-backend="anima">TOML merged over the generated <code>config.toml</code> (any sd-scripts / Anima argument), e.g.<br><code>[training_arguments]</code><br><code>noise_offset = 0.03</code></span>
+                            <span data-backend="aitk">YAML merged over <code>config.process[0]</code> of the generated ai-toolkit config, e.g.<br><code>train:</code><br><code>&nbsp;&nbsp;ema_config: { use_ema: true, ema_decay: 0.99 }</code></span>
+                        </div>
+                        <div class="form-group">
+                            <textarea data-bind="advanced.overrides" rows="10" spellcheck="false" style="font-family: var(--mono); font-size: 0.82rem;"></textarea>
+                        </div>
+                        <h4>Generated Config</h4>
+                        <div class="form-group">
+                            <div class="inline"><button id="btn-preview" class="btn btn-sm">👁 Preview generated files</button><small>Exactly what will be written and run when you press Train.</small></div>
+                        </div>
+                        <div id="preview-output"></div>
+                    </div>
+
+                    <!-- ============================================ Job settings -->
+                    <div id="tab-settings" class="tab-pane hidden">
+                        <h4>Job Maintenance</h4>
+                        <div class="form-group">
+                            <div class="inline"><button id="btn-open-job-folder" class="btn btn-ghost">📂 Open Job Folder</button></div>
+                            <small>Configs, launch script, logs and outputs live here.</small>
+                        </div>
+                        <div class="form-group">
+                            <div class="inline"><button id="btn-clone-model" class="btn">⇄ Clone to Another Model…</button></div>
+                            <small>Creates a new job with the same dataset folders and prompts on a different model.</small>
+                        </div>
+                        <h4>Danger Zone</h4>
+                        <div class="form-group">
+                            <div class="inline"><button id="btn-reset-config" class="btn btn-danger">⚠️ Reset Settings to Model Defaults</button></div>
+                            <small>Resets training/network/sampling settings. Dataset folders and prompts are kept.</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- New job -->
+    <div id="modal-new-job" class="modal hidden">
+        <div class="modal-content">
+            <h3>Create New Training Job</h3>
+            <div class="form-group">
+                <label>Job Name</label>
+                <input type="text" id="new-job-name" placeholder="my_character_v1">
+            </div>
+            <div class="form-group">
+                <label>Model</label>
+                <select id="new-job-model"></select>
+            </div>
+            <div class="form-group">
+                <label>Variant</label>
+                <select id="new-job-variant"></select>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" data-close="modal-new-job">Cancel</button>
+                <button id="btn-create-job" class="btn btn-primary">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Clone -->
+    <div id="modal-clone-job" class="modal hidden">
+        <div class="modal-content">
+            <h3>Clone Job</h3>
+            <div class="form-group">
+                <label>New Job Name</label>
+                <input type="text" id="clone-job-name">
+            </div>
+            <div class="form-group">
+                <label>Model</label>
+                <select id="clone-job-model"></select>
+                <small>Changing the model keeps dataset folders and prompts and uses that model's defaults for everything else.</small>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" data-close="modal-clone-job">Cancel</button>
+                <button id="btn-confirm-clone" class="btn btn-primary">Clone</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add subfolders -->
+    <div id="modal-subfolders" class="modal hidden">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>Add Subfolders as Datasets</h3>
+                <button class="btn-icon" data-close="modal-subfolders">✕</button>
+            </div>
+            <div class="form-group">
+                <label>Parent Folder</label>
+                <div class="inline">
+                    <input type="text" id="subfolder-parent" placeholder="/data/my_dataset">
+                    <button id="btn-scan-subfolders" class="btn btn-primary">Scan</button>
+                </div>
+                <small>Each subfolder becomes one dataset. Kohya-style names like <code>10_character</code> set the repeats.</small>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Default Repeats</label><input type="number" id="subfolder-default-repeats" value="1" min="1"></div>
+                <div class="form-group"><label>Caption Dropout</label><input type="number" id="subfolder-dropout" value="0.05" step="0.01" min="0" max="1"></div>
+                <div class="form-group"><label>Tag Dropout</label><input type="number" id="subfolder-tag-dropout" value="0" step="0.01" min="0" max="1"></div>
+            </div>
+            <div class="inline hint" style="margin-bottom:6px;"><label class="inline"><input type="checkbox" id="chk-subfolders-all" checked> Select all</label><span id="subfolder-summary"></span></div>
+            <div id="subfolder-list" class="subfolder-list"></div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" data-close="modal-subfolders">Cancel</button>
+                <button id="btn-add-selected-subfolders" class="btn btn-primary">Add Selected</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bulk edit -->
+    <div id="modal-bulk" class="modal hidden">
+        <div class="modal-content">
+            <h3>Bulk Edit Datasets</h3>
+            <p class="hint" id="bulk-target"></p>
+            <div id="bulk-fields"></div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" data-close="modal-bulk">Cancel</button>
+                <button id="btn-apply-bulk" class="btn btn-primary">Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Paste prompts -->
+    <div id="modal-paste-prompts" class="modal hidden">
+        <div class="modal-content modal-large">
+            <h3>Paste Prompts</h3>
+            <div class="form-group">
+                <textarea id="paste-prompts-text" rows="12" placeholder="One prompt per line"></textarea>
+                <small>Each non-empty line becomes a prompt using the default W/H/Steps/CFG/Seed.</small>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" data-close="modal-paste-prompts">Cancel</button>
+                <button id="btn-confirm-paste" class="btn btn-primary">Add Prompts</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm -->
+    <div id="modal-confirm" class="modal hidden">
+        <div class="modal-content">
+            <h3 id="confirm-title">Confirm</h3>
+            <p id="confirm-message"></p>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" data-close="modal-confirm">Cancel</button>
+                <button id="btn-confirm-ok" class="btn btn-danger">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Global settings -->
+    <div id="modal-global-settings" class="modal hidden">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h3>⚙️ Global Settings</h3>
+                <button class="btn-icon" data-close="modal-global-settings">✕</button>
+            </div>
+            <div class="tabs" id="global-tabs" style="padding:0; margin-bottom: 14px;"></div>
+            <div id="global-panes"></div>
+            <div class="modal-actions">
+                <button id="btn-save-global" class="btn btn-primary">Save Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="hw-monitor" class="hw-monitor"><span>GPU monitor: connecting…</span></div>
+
+    <script src="js/schema.js"></script>
+    <script src="js/app.js"></script>
+</body>
+
+</html>
