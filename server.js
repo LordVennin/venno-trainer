@@ -10,7 +10,7 @@ const WebSocket = require("ws");
 
 const S = require("./public/js/schema");
 const native = require("./lib/native");
-const { scanFolder, listSubfolders, IMAGE_EXTS } = require("./lib/datasets");
+const { scanFolder, listSubfolders, imageInFolder, writeCaption, IMAGE_EXTS } = require("./lib/datasets");
 const { Runner, resolvePython, launchScript } = require("./lib/runner");
 
 const args = process.argv.slice(2);
@@ -308,6 +308,26 @@ app.delete("/api/jobs/:name/samples", h((req, res) => {
 app.post("/api/datasets/scan", h((req, res) => {
   const { paths = [], caption_ext = ".txt" } = req.body || {};
   res.json(paths.map((p) => ({ path: p, ...scanFolder(String(p || "").trim(), caption_ext) })));
+}));
+
+// Every image without a caption file, for the captioning window.
+app.post("/api/datasets/uncaptioned", h((req, res) => {
+  const { paths = [], caption_ext = ".txt" } = req.body || {};
+  res.json(paths.map((p) => {
+    const dir = String(p || "").trim();
+    const s = scanFolder(dir, caption_ext, Infinity);
+    return { dir, exists: s.exists, images: s.images, names: s.missing };
+  }));
+}));
+
+app.get("/api/datasets/image", h((req, res) => {
+  res.sendFile(imageInFolder(String(req.query.dir || ""), String(req.query.name || "")));
+}));
+
+app.post("/api/datasets/caption", h((req, res) => {
+  const { dir, name, caption_ext = ".txt", text = "", overwrite = false } = req.body || {};
+  if (!String(text).trim()) return res.status(400).json({ error: "Caption is empty" });
+  res.json({ ok: true, path: writeCaption(String(dir || ""), String(name || ""), caption_ext, text, overwrite) });
 }));
 
 app.post("/api/datasets/subfolders", h((req, res) => {

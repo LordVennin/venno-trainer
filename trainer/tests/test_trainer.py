@@ -68,6 +68,17 @@ class DataTests(unittest.TestCase):
         for bt in batches:
             self.assertEqual(len({s.bucket for s in bt}), 1)
 
+    def test_uncaptioned_images_are_listed(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            F.make_images(tmp, 3)
+            os.remove(os.path.join(tmp, "img001.txt"))
+            items, missing = D.scan_folders([D.Folder(path=tmp)], ".txt")
+            self.assertEqual(len(items), 3)
+            self.assertEqual(missing, [os.path.join(tmp, "img001.png")])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_no_upscale_small_image(self):
         self.assertEqual(D.choose_bucket((300, 200), 1024, 64, D.make_buckets(1024, 64, 256, 2048), True, True), (256, 192))
 

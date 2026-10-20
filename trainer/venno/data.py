@@ -74,7 +74,7 @@ def read_caption(image_path, caption_ext, first_line_only):
 
 
 def scan_folders(folders: List[Folder], caption_ext=".txt", first_line_only=False):
-    items, missing = [], 0
+    items, missing = [], []
     for folder in folders:
         if not os.path.isdir(folder.path):
             raise FileNotFoundError(f"Dataset folder not found: {folder.path}")
@@ -83,7 +83,7 @@ def scan_folders(folders: List[Folder], caption_ext=".txt", first_line_only=Fals
             path = os.path.join(folder.path, name)
             caption = read_caption(path, caption_ext, first_line_only)
             if caption is None:
-                missing += 1
+                missing.append(path)
                 caption = ""
             items.append(Item(image=path, caption=caption, folder=folder))
     return items, missing

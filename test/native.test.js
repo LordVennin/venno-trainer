@@ -83,3 +83,20 @@ test("peak VRAM is read from the training progress line", () => {
   const r = native.buildRun(S.defaultJob("moss_image"), settings, "/j");
   assert.strictEqual(r.env.PYTORCH_CUDA_ALLOC_CONF, "expandable_segments:True");
 });
+
+test("captions are written next to images, never over existing ones", () => {
+  const fs = require("fs");
+  const os = require("os");
+  const { scanFolder, writeCaption, imageInFolder } = require("../lib/datasets");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "venno-cap-"));
+  for (const n of ["a.png", "b.jpg", "c.webp"]) fs.writeFileSync(path.join(dir, n), "x");
+  fs.writeFileSync(path.join(dir, "a.txt"), "has one");
+  assert.deepStrictEqual(scanFolder(dir, ".txt", Infinity).missing, ["b.jpg", "c.webp"]);
+  writeCaption(dir, "b.jpg", "txt", "  sks, 1girl  ");
+  assert.strictEqual(fs.readFileSync(path.join(dir, "b.txt"), "utf8"), "sks, 1girl\n");
+  assert.throws(() => writeCaption(dir, "a.png", ".txt", "new"), /already exists/);
+  assert.throws(() => imageInFolder(dir, "../etc/passwd"), /Not an image/);
+  assert.throws(() => imageInFolder(dir, "a.txt"), /Not an image/);
+  assert.deepStrictEqual(scanFolder(dir, ".txt", Infinity).missing, ["c.webp"]);
+  fs.rmSync(dir, { recursive: true });
+});

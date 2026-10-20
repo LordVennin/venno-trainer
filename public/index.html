@@ -576,6 +576,28 @@
         </div>
     </div>
 
+    <!-- Caption uncaptioned images -->
+    <div id="modal-captions" class="modal hidden">
+        <div class="modal-content modal-large" style="width: 960px;">
+            <div class="modal-header">
+                <h3>Uncaptioned Images <span id="cap-count" class="chip"></span></h3>
+                <button class="btn-icon" data-close="modal-captions">✕</button>
+            </div>
+            <p class="hint" id="cap-where"></p>
+            <div class="global-settings-bar" style="align-items:center;">
+                <input type="text" id="cap-template" placeholder="Starting text for every box, e.g. sks, 1girl," style="flex:1;">
+                <button id="btn-cap-template" class="btn btn-sm">Fill empty boxes</button>
+                <button id="btn-cap-save-all" class="btn btn-primary btn-sm">Save all filled</button>
+            </div>
+            <p class="hint">Saving writes the caption file next to the image. Ctrl+Enter saves a box and jumps to the next one.</p>
+            <div id="cap-list" class="cap-list"></div>
+            <div class="modal-actions">
+                <button id="btn-cap-more" class="btn btn-sm hidden">Show more</button>
+                <button class="btn btn-ghost" data-close="modal-captions">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Bulk edit -->
     <div id="modal-bulk" class="modal hidden">
         <div class="modal-content">

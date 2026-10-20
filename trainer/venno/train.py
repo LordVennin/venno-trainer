@@ -125,7 +125,17 @@ class Trainer:
         self.items, missing = D.scan_folders(folders, self.d.get("caption_ext") or ".txt", self.adapter.caption_first_line_only)
         if not self.items:
             raise ValueError("The dataset folders contain no images.")
-        log(f"Dataset: {len(self.items)} images in {len(folders)} folder(s)" + (f", {missing} without captions" if missing else ""))
+        log(f"Dataset: {len(self.items)} images in {len(folders)} folder(s)" + (f", {len(missing)} without captions" if missing else ""))
+        if missing:
+            os.makedirs(self.output_dir, exist_ok=True)
+            listing = os.path.join(self.output_dir, "uncaptioned.txt")
+            with open(listing, "w", encoding="utf-8") as f:
+                f.write("\n".join(missing) + "\n")
+            for p in missing[:10]:
+                log(f"  no caption: {p}")
+            more = f"{len(missing) - 10} more; " if len(missing) > 10 else ""
+            log(f"  ({more}full list in {listing}; they train with an empty caption. "
+                "Dataset tab → click 'uncaptioned' on a folder to caption them.)")
         D.read_sizes(self.items)
         self.resolutions = int_list(self.d.get("resolutions"), [1024])
         self.batch_sizes = int_list(self.d.get("batch_sizes"), [1])

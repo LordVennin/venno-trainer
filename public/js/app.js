@@ -349,11 +349,98 @@ function renderDatasetSummary() {
   $("dataset-summary").innerHTML = `
     <div class="stat"><div class="v">${t.enabled} / ${t.total}</div><div class="k">Folders enabled</div></div>
     <div class="stat"><div class="v">${fmt(t.images)}</div><div class="k">Images</div></div>
-    <div class="stat"><div class="v" style="color:${capPct < 100 && t.images ? "var(--warning)" : "inherit"}">${capPct}%</div><div class="k">Captioned</div></div>
+    <div class="stat ${capPct < 100 && t.images ? "clickable" : ""}" id="stat-captioned" ${capPct < 100 && t.images ? 'title="Show every uncaptioned image"' : ""}><div class="v" style="color:${capPct < 100 && t.images ? "var(--warning)" : "inherit"}">${capPct}%</div><div class="k">Captioned${capPct < 100 && t.images ? " · review" : ""}</div></div>
     <div class="stat"><div class="v">${fmt(t.effective)}</div><div class="k">Samples / epoch</div></div>
     <div class="stat"><div class="v">${fmt(t.stepsPerEpoch)}</div><div class="k">Steps / epoch</div></div>
     <div class="stat"><div class="v">${fmt(totalSteps)}</div><div class="k">Total steps (${epochs} ep)</div></div>`;
+  const stat = $("stat-captioned");
+  if (stat && stat.classList.contains("clickable")) {
+    stat.style.cursor = "pointer";
+    stat.onclick = () => openCaptioner(job.dataset.folders.filter((f) => f.enabled && f.path.trim()).map((f) => f.path.trim()));
+  }
   updateEpochHint();
+}
+
+// ---- caption uncaptioned images
+
+let capItems = []; // {dir, name}
+let capShown = 0;
+const CAP_PAGE = 30;
+
+async function openCaptioner(dirs) {
+  const res = await api("/api/datasets/uncaptioned", { method: "POST", body: { paths: dirs, caption_ext: job.dataset.caption_ext } });
+  capItems = res.flatMap((r) => r.names.map((name) => ({ dir: r.dir, name })));
+  capShown = 0;
+  $("cap-count").textContent = capItems.length;
+  $("cap-where").textContent = dirs.length === 1 ? dirs[0] : `${dirs.length} folders`;
+  $("cap-list").innerHTML = capItems.length ? "" : '<p class="hint">Every image has a caption.</p>';
+  openModal("modal-captions");
+  renderCaptionRows();
+}
+
+function imageUrl(it) {
+  return `/api/datasets/image?dir=${encodeURIComponent(it.dir)}&name=${encodeURIComponent(it.name)}`;
+}
+
+function renderCaptionRows() {
+  const list = $("cap-list");
+  const multi = new Set(capItems.map((i) => i.dir)).size > 1;
+  capItems.slice(capShown, capShown + CAP_PAGE).forEach((it) => {
+    const row = document.createElement("div");
+    row.className = "cap-row";
+    row.innerHTML = `
+      <img loading="lazy" src="${imageUrl(it)}" alt="" title="Open full size">
+      <div>
+        <div class="cap-name">${escapeHtml(multi ? it.dir.split(/[\\/]/).filter(Boolean).pop() + " / " : "")}${escapeHtml(it.name)}</div>
+        <textarea placeholder="Caption for this image"></textarea>
+      </div>
+      <button class="btn btn-sm btn-primary">Save</button>`;
+    const ta = row.querySelector("textarea");
+    const save = async () => {
+      if (!ta.value.trim()) return false;
+      try {
+        await api("/api/datasets/caption", { method: "POST", body: { dir: it.dir, name: it.name, caption_ext: job.dataset.caption_ext, text: ta.value } });
+        row.classList.add("saved");
+        row.querySelector("button").textContent = "Saved ✓";
+        it.saved = true;
+        scanCache.delete(it.dir); // refresh the folder's caption count
+        scanDatasets();
+        return true;
+      } catch (e) {
+        showToast(e.message);
+        return false;
+      }
+    };
+    row.querySelector("button").onclick = save;
+    row.querySelector("img").onclick = () => window.open(imageUrl(it), "_blank");
+    ta.addEventListener("keydown", async (e) => {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (await save()) {
+          const next = [...list.querySelectorAll(".cap-row:not(.saved) textarea")][0];
+          if (next) next.focus();
+        }
+      }
+    });
+    it.row = row;
+    list.appendChild(row);
+  });
+  capShown = Math.min(capItems.length, capShown + CAP_PAGE);
+  $("btn-cap-more").classList.toggle("hidden", capShown >= capItems.length);
+  $("btn-cap-more").textContent = `Show more (${capItems.length - capShown} left)`;
+}
+
+async function saveAllCaptions() {
+  let n = 0;
+  for (const it of capItems) {
+    if (!it.row || it.saved) continue;
+    const ta = it.row.querySelector("textarea");
+    if (ta.value.trim()) {
+      it.row.querySelector("button").click();
+      n++;
+    }
+  }
+  showToast(n ? `Saving ${n} caption(s)` : "No filled boxes to save");
 }
 
 function updateEpochHint() {
@@ -373,7 +460,7 @@ function folderChips(f) {
   if (s && !s.exists && f.path.trim()) chips.push('<span class="chip bad">not found</span>');
   else if (s) {
     chips.push(`<span class="chip">${fmt(s.images)} img</span>`);
-    if (s.captioned < s.images) chips.push(`<span class="chip warn" title="Images without a caption file">${fmt(s.images - s.captioned)} uncaptioned</span>`);
+    if (s.captioned < s.images) chips.push(`<span class="chip warn clickable ds-uncaptioned" data-dir="${escapeHtml(f.path.trim())}" title="Show and caption these images">${fmt(s.images - s.captioned)} uncaptioned</span>`);
   }
   chips.push(`<span class="chip" title="Repeats">×${escapeHtml(f.repeats)}</span>`);
   if (Number(f.loss_weight) !== 1) chips.push(`<span class="chip" title="Loss weight">w ${escapeHtml(f.loss_weight)}</span>`);
@@ -426,7 +513,7 @@ function renderDatasets() {
             <input type="text" data-f="path" value="${escapeHtml(f.path)}" placeholder="/path/to/images">
             <button class="btn ds-open" title="Open folder">📂</button>
           </div>
-          <small class="ds-scan">${s && s.exists ? `${fmt(s.images)} images, ${fmt(s.captioned)} with ${escapeHtml(job.dataset.caption_ext)} captions${s.missing.length ? ` — missing e.g. ${escapeHtml(s.missing.slice(0, 3).join(", "))}` : ""}` : s && f.path.trim() ? "Folder not found" : ""}</small>
+          <small class="ds-scan">${s && s.exists ? `${fmt(s.images)} images, ${fmt(s.captioned)} with ${escapeHtml(job.dataset.caption_ext)} captions${s.missing.length ? ` — <a href="#" class="ds-uncaptioned" data-dir="${escapeHtml(f.path.trim())}">show the ${fmt(s.images - s.captioned)} uncaptioned</a>` : ""}` : s && f.path.trim() ? "Folder not found" : ""}</small>
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -1246,6 +1333,21 @@ function bindEvents() {
     document.querySelectorAll("#subfolder-list .sf-check:not(:disabled)").forEach((c) => (c.checked = e.target.checked));
   $("btn-add-selected-subfolders").onclick = addSelectedSubfolders;
   $("btn-bulk-edit").onclick = openBulkEdit;
+  $("btn-cap-more").onclick = renderCaptionRows;
+  $("btn-cap-save-all").onclick = saveAllCaptions;
+  $("btn-cap-template").onclick = () => {
+    const t = $("cap-template").value;
+    $("cap-list").querySelectorAll(".cap-row:not(.saved) textarea").forEach((ta) => {
+      if (!ta.value.trim()) ta.value = t;
+    });
+  };
+  // chips are redrawn while editing, so listen on the list
+  $("dataset-list").addEventListener("click", (e) => {
+    const el = e.target.closest(".ds-uncaptioned");
+    if (!el) return;
+    e.preventDefault();
+    openCaptioner([el.dataset.dir]);
+  });
   $("btn-apply-bulk").onclick = applyBulkEdit;
   $("btn-rescan").onclick = () => {
     scanCache.clear();
