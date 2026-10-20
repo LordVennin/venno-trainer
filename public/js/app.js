@@ -1181,7 +1181,10 @@ function bindEvents() {
       showToast(e.message);
     }
   };
-  $("new-job-name").onkeydown = (e) => e.key === "Enter" && $("btn-create-job").click();
+  // a handler property returning false cancels the keystroke, so never return the comparison
+  $("new-job-name").onkeydown = (e) => {
+    if (e.key === "Enter") $("btn-create-job").click();
+  };
   $("btn-save").onclick = () => saveJob().catch((e) => showToast(e.message));
   $("btn-discard").onclick = () => selectJob(currentJob);
   const openClone = () => {
@@ -1236,7 +1239,9 @@ function bindEvents() {
     $("subfolder-parent").focus();
   };
   $("btn-scan-subfolders").onclick = scanSubfolders;
-  $("subfolder-parent").onkeydown = (e) => e.key === "Enter" && scanSubfolders();
+  $("subfolder-parent").onkeydown = (e) => {
+    if (e.key === "Enter") scanSubfolders();
+  };
   $("chk-subfolders-all").onchange = (e) =>
     document.querySelectorAll("#subfolder-list .sf-check:not(:disabled)").forEach((c) => (c.checked = e.target.checked));
   $("btn-add-selected-subfolders").onclick = addSelectedSubfolders;
