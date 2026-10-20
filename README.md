@@ -78,6 +78,9 @@ encoder while captions are cached.
 - **Bulk Edit…** sets any of those fields on the selected folders (or all of them).
 - **Live stats**: images, uncaptioned files, samples and steps per epoch, total steps, and each
   folder's share of an epoch.
+- *Caption dropout every N epochs* works as in the Anima trainer: on epochs N, 2N, 3N… every
+  image in the folder trains with an empty caption (the images are not skipped). Unlike the Anima
+  trainer it also works with text-encoder caching on, where sd-scripts ignores it.
 - Captions are processed in sd-scripts order: prefix → caption dropout (per folder, or whole
   epochs) → shuffle with keep tokens → tag dropout on comma-separated tags. Anima reads the first
   caption line (as sd-scripts does); MOSS uses the whole file.

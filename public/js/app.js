@@ -548,9 +548,9 @@ function renderDatasets() {
             <small>Chance to drop each comma-separated tag.</small>
           </div>
           <div class="form-group">
-            <label>Dropout Every N Epochs</label>
+            <label>Caption Dropout Every N Epochs</label>
             <input type="number" data-f="dropout_every_n_epochs" value="${escapeHtml(f.dropout_every_n_epochs)}" min="0">
-            <small>Whole epochs trained without captions. 0 = off.</small>
+            <small>On epochs N, 2N, 3N… every image here trains with an empty caption (the images still train). 0 = off.</small>
           </div>
         </div>
         <div class="checkbox-group" style="margin-bottom:10px;">
@@ -709,7 +709,7 @@ const BULK_FIELDS = [
   ["loss_weight", "Loss weight", "number", "0.1"],
   ["caption_dropout", "Caption dropout", "number", "0.01"],
   ["tag_dropout", "Tag dropout", "number", "0.01"],
-  ["dropout_every_n_epochs", "Dropout every N epochs", "number", "1"],
+  ["dropout_every_n_epochs", "Caption dropout every N epochs", "number", "1"],
   ["keep_tokens", "Keep tokens", "number", "1"],
   ["caption_prefix", "Caption prefix / trigger", "text"],
   ["shuffle", "Shuffle captions", "checkbox"],

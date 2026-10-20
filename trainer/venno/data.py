@@ -137,9 +137,14 @@ def caption_live(item: Item, epoch: int, rng: random.Random):
 
 
 def is_dropped(folder: Folder, epoch: int, rng: random.Random):
+    """Whether this sample trains with an empty caption. `epoch` is the 0-based
+    epoch index; "every N epochs" counts from 1 like sd-scripts (epoch + 1), so
+    N=3 drops the captions of every image in the folder on epochs 3, 6, 9... The
+    images themselves always train."""
     if folder.caption_dropout > 0 and rng.random() < folder.caption_dropout:
         return True
-    return folder.dropout_every_n_epochs > 0 and epoch % folder.dropout_every_n_epochs == 0
+    n = folder.dropout_every_n_epochs
+    return n > 0 and (epoch + 1) % n == 0
 
 
 # ------------------------------------------------------------------- buckets

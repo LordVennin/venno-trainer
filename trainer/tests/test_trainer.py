@@ -49,10 +49,12 @@ class DataTests(unittest.TestCase):
         self.assertEqual(D.caption_variant(plain, 0, 8, 42), "sks, a, b")
 
     def test_dropout_every_n_epochs(self):
+        # sd-scripts counts epochs from 1: N=3 drops captions on epochs 3, 6, ...
         f = D.Folder(path="x", dropout_every_n_epochs=3)
         rng = random.Random(0)
-        self.assertTrue(D.is_dropped(f, 3, rng))
-        self.assertFalse(D.is_dropped(f, 4, rng))
+        dropped = [i + 1 for i in range(9) if D.is_dropped(f, i, rng)]
+        self.assertEqual(dropped, [3, 6, 9])
+        self.assertFalse(any(D.is_dropped(D.Folder(path="x"), i, rng) for i in range(9)))
 
     def test_buckets_and_epoch_batches(self):
         a, b, r = D.Folder(path="a", repeats=3), D.Folder(path="b", repeats=1), D.Folder(path="r", is_reg=True)
