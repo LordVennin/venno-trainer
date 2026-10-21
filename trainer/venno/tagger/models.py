@@ -1,15 +1,21 @@
-"""Auto-tagging models. Each returns raw predictions per image as
+"""Auto-tagging models. Each returns predictions per image as
 (tag, probability, category) tuples; thresholds, exclusions and formatting
 are applied by the UI so they can be changed without re-running a model.
+Hydra 3.5 picks its own tags (per-tag thresholds calibrated on its
+validation data, then tag implications), so its tuples carry a fourth item:
+whether the tag was picked.
 
 - WD v3 (SmilingWolf, Danbooru tags): timm weights, white-padded square
   input, BGR channel order, as the reference wd-tagger code feeds them.
 - JTP-3 Hydra (Project RedRocket, e621 tags): SigLIP2 NaFlex ViT with the
-  Hydra head, aspect-preserving patch input (see jtp3/)."""
+  Hydra head, aspect-preserving patch input (see jtp3/).
+- Hydra 3.5 (Project RedRocket, e621 tags): the successor of JTP-3, run with
+  the vendor's own model, image loading and calibration code (hydra35/)."""
 
 import csv
 import json
 import os
+import sys
 import threading
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -27,11 +33,15 @@ MODELS = {
     "wd-vit-large-v3": {"label": "WD ViT-Large v3 (Danbooru)", "repo": "SmilingWolf/wd-vit-large-tagger-v3", "kind": "wd", "gb": 1.3},
     "wd-swinv2-v3": {"label": "WD SwinV2 v3 (Danbooru)", "repo": "SmilingWolf/wd-swinv2-tagger-v3", "kind": "wd", "gb": 0.4},
     "wd-vit-v3": {"label": "WD ViT v3 (Danbooru, fastest)", "repo": "SmilingWolf/wd-vit-tagger-v3", "kind": "wd", "gb": 0.4},
+    "hydra-3.5": {"label": "Hydra 3.5 (e621, furry, calibrated)", "repo": "RedRocket/Hydra", "kind": "hydra35", "gb": 1.1},
     "jtp-3-hydra": {"label": "JTP-3 Hydra (e621, furry)", "repo": "RedRocket/Hydra", "kind": "jtp3", "gb": 1.0},
 }
 
-WD_FILES = ["config.json", "model.safetensors", "selected_tags.csv"]
-JTP3_FILES = ["models/jtp-3-hydra.safetensors", "data/jtp-3-hydra-tags.csv"]
+FILES = {
+    "wd": ["config.json", "model.safetensors", "selected_tags.csv"],
+    "jtp3": ["models/jtp-3-hydra.safetensors", "data/jtp-3-hydra-tags.csv"],
+    "hydra35": ["models/hydra-3.5.safetensors", "data/aliases-2024-04-07.txt"],
+}
 
 
 def model_dir(models_dir, model_id):
@@ -39,7 +49,7 @@ def model_dir(models_dir, model_id):
 
 
 def is_downloaded(models_dir, model_id):
-    files = WD_FILES if MODELS[model_id]["kind"] == "wd" else JTP3_FILES
+    files = FILES[MODELS[model_id]["kind"]]
     return all(os.path.isfile(os.path.join(model_dir(models_dir, model_id), f)) for f in files)
 
 
@@ -51,7 +61,7 @@ def fetch(models_dir, model_id, token=None, status: Callable[[str], None] = prin
     from huggingface_hub import hf_hub_download
 
     info = MODELS[model_id]
-    files = WD_FILES if info["kind"] == "wd" else JTP3_FILES
+    files = FILES[info["kind"]]
     status(f"Downloading {info['label']} (~{info['gb']} GB, once)...")
     done = threading.Event()
 
@@ -145,6 +155,61 @@ class JTP3Tagger:
         return torch.sigmoid(logits.float()).cpu()
 
 
+class Hydra35Tagger:
+    """Hydra 3.5 through the vendor code. Tags are picked per image with
+    thresholds calibrated for a confidence slider (0 = speculative, 0.5 =
+    balanced F1, 1 = confident; minimum precision 0.1), then implications."""
+
+    def __init__(self, root, device, dtype):
+        if sys.version_info < (3, 11):
+            raise RuntimeError(f"Hydra 3.5 needs Python 3.11 or newer (this venv has {sys.version.split()[0]}); WD and JTP-3 work on any version.")
+        try:
+            import pyvips  # noqa: F401
+        except (ImportError, OSError) as e:
+            raise RuntimeError("Hydra 3.5 needs pyvips: run ./setup.sh again to install it.") from e
+        from .hydra35 import image as himage
+        from .hydra35.classification import simple_slider
+        from .hydra35.label import parse_aliases
+        from .hydra35.model import load_model
+
+        self.himage, self.simple_slider = himage, simple_slider
+        model = load_model(os.path.join(root, "models", "hydra-3.5.safetensors"))
+        self.model = model.to(device=device, dtype=dtype)
+        self.device, self.dtype = device, dtype
+        self.seqlen = model.image_config.max_seqlen
+        self.tags = []
+        for label in model.labels:
+            sub = label.subcategory
+            self.tags.append((label.label, sub if sub in ("rating", "color") else label.category))
+        with open(os.path.join(root, "data", "aliases-2024-04-07.txt"), encoding="utf-8") as f:
+            self.aliases = dict(parse_aliases(f.read()))
+        self.calibrations = {}
+
+    def preprocess(self, path):
+        return self.himage.as_tensor(self.model.open_image(path))
+
+    @torch.no_grad()
+    def predict(self, batch):
+        patches, sizes = self.himage.stack(batch, 16, self.seqlen, device=self.device)
+        return self.model.forward(self.model.from_srgb(patches), sizes).float().cpu()
+
+    def calibration(self, confidence):
+        key = round(min(1.0, max(0.0, float(confidence))), 2)
+        if key not in self.calibrations:
+            self.calibrations[key] = self.model.calibrate(self.simple_slider(key))
+        return self.calibrations[key]
+
+    def classify(self, probs, opts):
+        """The tags Hydra picks for one image: {tag: probability}."""
+        return self.calibration(opts.get("confidence", 0.5)).classify_output(
+            probs,
+            implications=opts.get("implications") or "inherit",
+            exclude_categories=set(opts.get("exclude_categories") or ()),
+            exclude_labels=set(opts.get("exclude_tags") or ()),
+            sort=False,
+        )
+
+
 def load(model_id, models_dir, device, token=None, status=print):
     if model_id not in MODELS:
         raise ValueError(f"Unknown tagger model: {model_id}")
@@ -155,16 +220,24 @@ def load(model_id, models_dir, device, token=None, status=print):
     root = fetch(models_dir, model_id, token, status)
     status(f"Loading {MODELS[model_id]['label']} on {device}...")
     dev = torch.device(device)
-    if dev.type == "cuda":
-        dtype = torch.bfloat16 if MODELS[model_id]["kind"] == "jtp3" else torch.float16
+    kind = MODELS[model_id]["kind"]
+    if kind == "hydra35":
+        dtype = torch.bfloat16  # its calibrated thresholds are snapped to bf16 outputs
+    elif dev.type == "cuda":
+        dtype = torch.float16 if kind == "wd" else torch.bfloat16
     else:
         dtype = torch.float32
-    cls = WDTagger if MODELS[model_id]["kind"] == "wd" else JTP3Tagger
+    cls = {"wd": WDTagger, "jtp3": JTP3Tagger, "hydra35": Hydra35Tagger}[kind]
     return cls(root, dev, dtype)
 
 
-def run(tagger, paths: List[str], floor=0.1, top=400, batch_size=4) -> List[Dict]:
-    """Predictions for each path, best first; failures are reported per image."""
+def run(tagger, paths: List[str], floor=0.1, top=400, batch_size=4, options=None) -> List[Dict]:
+    """Predictions for each path, best first; failures are reported per image.
+    Taggers that pick their own tags (classify) also mark the picked ones,
+    which are always included."""
+    options = options or {}
+    classify = getattr(tagger, "classify", None)
+    aliases = getattr(tagger, "aliases", {}) if options.get("aliases") else {}
     out: List[Optional[Dict]] = [None] * len(paths)
     ready = []
     for i, p in enumerate(paths):
@@ -178,8 +251,15 @@ def run(tagger, paths: List[str], floor=0.1, top=400, batch_size=4) -> List[Dict
         for (i, _), row in zip(chunk, probs):
             keep = torch.nonzero(row >= floor).flatten()
             order = keep[torch.argsort(row[keep], descending=True)][:top]
-            out[i] = {
-                "path": paths[i],
-                "preds": [[tagger.tags[j][0], round(float(row[j]), 4), tagger.tags[j][1]] for j in order.tolist()],
-            }
+            if classify is None:
+                preds = [[tagger.tags[j][0], round(float(row[j]), 4), tagger.tags[j][1]] for j in order.tolist()]
+            else:
+                picked = classify(row, options)
+                cats = dict(tagger.tags)
+                preds = [[t, round(float(p), 4), cats[t], True] for t, p in picked.items()]
+                preds += [[tagger.tags[j][0], round(float(row[j]), 4), tagger.tags[j][1], False]
+                          for j in order.tolist() if tagger.tags[j][0] not in picked]
+                preds.sort(key=lambda p: -p[1])
+                preds = [[aliases.get(p[0], p[0]), *p[1:]] for p in preds]
+            out[i] = {"path": paths[i], "preds": preds}
     return out

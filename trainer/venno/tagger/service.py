@@ -6,7 +6,9 @@ download/load progress. The model stays loaded between requests until
 
 Requests:
   {"cmd": "tag", "model": id, "device": "cuda"|"cpu", "paths": [...],
-   "models_dir": dir, "floor": 0.1, "batch_size": 4}
+   "models_dir": dir, "floor": 0.1, "batch_size": 4, "options": {...}}
+  (options: Hydra 3.5's confidence, implications, aliases, exclude_categories
+   and exclude_tags)
   {"cmd": "thumbs", "items": [{"src": path, "dst": path, "size": 320}]}
   {"cmd": "unload"} / {"cmd": "status"} / {"cmd": "models", "models_dir": dir}
 Model work runs on one worker thread (in order); thumbnails on a pool."""
@@ -116,7 +118,7 @@ class Service:
                 self.loaded = want
                 status(f"Ready: {M.MODELS[want[0]]['label']} on {want[1]}")
             results = M.run(self.tagger, list(msg.get("paths") or []), floor=float(msg.get("floor", 0.1)),
-                            batch_size=max(1, int(msg.get("batch_size") or 4)))
+                            batch_size=max(1, int(msg.get("batch_size") or 4)), options=msg.get("options"))
             return {"results": results, "device": want[1]}
         raise ValueError(f"Unknown command: {cmd}")
 

@@ -18,6 +18,7 @@
   const CATEGORIES = {
     wd: ["general", "character", "rating"],
     jtp3: ["general", "species", "character", "copyright", "artist", "meta", "lore", "rating"],
+    hydra35: ["general", "color", "species", "character", "copyright", "artist", "contributor", "meta", "lore", "rating"],
   };
 
   function splitTags(text) {
@@ -57,7 +58,9 @@
     });
   }
 
-  // Model predictions [[name, prob, category], ...] -> formatted tag list.
+  // Model predictions [[name, prob, category, picked?], ...] -> formatted tag
+  // list. A model that picks its own tags (Hydra 3.5's calibration) sends
+  // picked = true/false, which replaces the thresholds.
   // opts: {general, character} thresholds, include {category: bool},
   // exclude (comma list), prefix (comma list, always first), max_tags,
   // order ("confidence" | "alpha"), underscores, escape.
@@ -68,14 +71,14 @@
     const named = Number(opts.character ?? 0.85);
     let rating = null;
     const picked = [];
-    for (const [name, prob, cat] of preds || []) {
+    for (const [name, prob, cat, pickedByModel] of preds || []) {
       if (include[cat] === false) continue;
       if (cat === "rating") {
         // only the most likely rating, and only when asked for
         if (include.rating && (!rating || prob > rating[1])) rating = [name, prob];
         continue;
       }
-      if (prob < (NAMED.has(cat) ? named : gen)) continue;
+      if (pickedByModel === undefined ? prob < (NAMED.has(cat) ? named : gen) : !pickedByModel) continue;
       if (exclude.has(tagKey(name))) continue;
       picked.push({ name, prob, named: NAMED.has(cat) || cat === "species" });
     }

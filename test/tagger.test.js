@@ -108,3 +108,27 @@ test("an auto-tag run writes captions by mode and can be undone", async () => {
   run.cancel();
   assert.strictEqual((await run.run()).state, "cancelled");
 });
+
+test("a model that picks its own tags (Hydra 3.5) overrides the thresholds", () => {
+  const preds = [["fox", 0.4, "species", true], ["red_fur", 0.9, "color", false], ["hi_res", 0.95, "meta", true], ["tail", 0.6, "general", true]];
+  assert.deepStrictEqual(T.selectPredictions(preds, { general: 0.5, include: { meta: false } }), ["fox", "tail"]);
+});
+
+test("an auto-tag run hands the model options to the tagger", async () => {
+  const dir = tmpDataset({ "a.png": null });
+  let seen;
+  const fake = {
+    async tag(paths, args) {
+      seen = args.options;
+      return { device: "cpu", results: paths.map((p) => ({ path: p, preds: [["fox", 0.3, "species", true], ["cat", 0.99, "species", false]] })) };
+    },
+  };
+  const undo = new tagger.UndoStore(() => path.join(dir, ".undo.json"));
+  const run = new tagger.TagRun(fake, undo, {
+    items: tagger.listFolder(dir, ".txt"), captionExt: ".txt", model: "hydra-3.5", device: "cpu", batch_size: 1, mode: "skip",
+    options: { model_options: { confidence: 0.7 } },
+  });
+  await run.run();
+  assert.deepStrictEqual(seen, { confidence: 0.7 });
+  assert.strictEqual(fs.readFileSync(path.join(dir, "a.txt"), "utf8"), "fox\n");
+});

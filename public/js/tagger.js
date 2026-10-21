@@ -314,10 +314,20 @@ function modelKind(id = tg.cfg.model) {
   return m ? m.kind : id.startsWith("jtp") ? "jtp3" : "wd";
 }
 
+const HYDRA_IMPL_HINTS = {
+  inherit: "Tags implied by a picked tag are kept and take its probability (western dragon → dragon).",
+  "enforce-inherit": "Also drops tags whose implied tags were not picked.",
+  preserve: "Implied tags are kept with their own probability.",
+  constrain: "Tags take the lowest probability of the tags they imply.",
+  remove: "Drops tags implied by another picked tag (keeps western dragon, drops dragon).",
+  off: "Raw model output; tags may contradict each other.",
+};
+
 function tagOptions() {
   const c = tg.cfg;
-  const th = c[modelKind()] || {};
-  return {
+  const kind = modelKind();
+  const th = c[kind] || {};
+  const opts = {
     general: th.general,
     character: th.character,
     include: c.include,
@@ -328,6 +338,17 @@ function tagOptions() {
     underscores: c.underscores,
     escape: c.escape,
   };
+  if (kind === "hydra35") {
+    // Hydra applies these before its implications, as its own tagger does
+    opts.model_options = {
+      confidence: th.confidence,
+      implications: th.implications,
+      aliases: th.aliases,
+      exclude_categories: (tg.categories.hydra35 || []).filter((cat) => c.include[cat] === false || (cat === "rating" && !c.include.rating)),
+      exclude_tags: T.splitTags(c.exclude).map((t) => t.replace(/ /g, "_")),
+    };
+  }
+  return opts;
 }
 
 async function predictTaggerImage() {
@@ -339,7 +360,10 @@ async function predictTaggerImage() {
   btn.textContent = "Tagging…";
   $("tg-preds").innerHTML = `<p class="hint">Running ${escapeHtml(modelLabel())}… the first run loads (and if needed downloads) the model.</p>`;
   try {
-    const r = await api("/api/tagger/predict", { method: "POST", body: { dir: it.dir, name: it.name, model: tg.cfg.model, device: tg.cfg.device } });
+    const r = await api("/api/tagger/predict", {
+      method: "POST",
+      body: { dir: it.dir, name: it.name, model: tg.cfg.model, device: tg.cfg.device, model_options: tagOptions().model_options },
+    });
     tg.preds = { key: tgKey(it), ...r };
     if (tg.filtered[tg.sel] === it) renderPredictions();
   } catch (e) {
@@ -366,7 +390,7 @@ function renderPredictions() {
   const have = new Set(T.splitTags($("tg-caption").value).map(T.tagKey));
   const floor = Math.min(0.2, opts.general ?? 0.35);
   const rows = tg.preds.preds
-    .filter(([, p, cat]) => p >= floor || cat === "rating")
+    .filter(([, p, cat, pickedByModel]) => p >= floor || cat === "rating" || pickedByModel)
     .map(([name, p, cat]) => {
       const tag = T.formatTag(name, opts);
       const k = T.tagKey(tag);
@@ -380,7 +404,7 @@ function renderPredictions() {
     });
   box.innerHTML = `
     <div class="tg-preds-head">
-      <span class="hint">${escapeHtml(modelLabel(tg.preds.model))} on ${escapeHtml(tg.preds.device)} · ticked = above your thresholds · greyed = already in the caption</span>
+      <span class="hint">${escapeHtml(modelLabel(tg.preds.model))} on ${escapeHtml(tg.preds.device)} · ticked = ${modelKind(tg.preds.model) === "hydra35" ? "picked by Hydra's calibration" : "above your thresholds"} · greyed = already in the caption</span>
     </div>
     <div class="tg-pred-list">${rows.join("") || '<p class="hint">No tags above the lowest shown confidence.</p>'}</div>
     <div class="inline" style="margin-top:6px;">
@@ -511,9 +535,19 @@ async function loadTaggerModels() {
 
 function renderModelFields() {
   const kind = modelKind();
-  const th = tg.cfg[kind] || (tg.cfg[kind] = { general: 0.35, character: 0.85 });
-  $("tg-th-general").value = th.general;
-  $("tg-th-character").value = th.character;
+  const th = tg.cfg[kind] || (tg.cfg[kind] = kind === "hydra35" ? { confidence: 0.5, implications: "inherit", aliases: false } : { general: 0.35, character: 0.85 });
+  $("tg-hydra-fields").classList.toggle("hidden", kind !== "hydra35");
+  $("tg-threshold-fields").classList.toggle("hidden", kind === "hydra35");
+  if (kind === "hydra35") {
+    $("tg-hy-conf").value = th.confidence;
+    $("tg-hy-conf-val").textContent = Number(th.confidence).toFixed(2);
+    $("tg-hy-impl").value = th.implications;
+    $("tg-hy-impl-hint").textContent = HYDRA_IMPL_HINTS[th.implications] || "";
+    $("tg-hy-aliases").checked = !!th.aliases;
+  } else {
+    $("tg-th-general").value = th.general;
+    $("tg-th-character").value = th.character;
+  }
   $("tg-th-general-hint").textContent = kind === "jtp3" ? "e621 tags. JTP-3's demo default is 0.65." : "Danbooru tags. 0.35 is the usual WD default.";
   const m = tg.models.find((x) => x.id === tg.cfg.model);
   $("tg-model-hint").textContent = m ? (m.downloaded ? "Downloaded." : `Downloads ~${m.gb} GB into the models folder on first use.`) : "";
@@ -525,6 +559,7 @@ function renderModelFields() {
     el.onchange = () => {
       tg.cfg.include[el.dataset.cat] = el.checked;
       saveTaggerSettings();
+      if (kind === "hydra35") repredictSoon();
     };
   });
 }
@@ -547,7 +582,25 @@ function bindTaggerSettings() {
       saveTaggerSettings();
     });
   }
+  // Hydra picks tags in the model process, so a change re-runs the open image
+  const hydraSet = (k, v) => {
+    tg.cfg.hydra35[k] = v;
+    renderModelFields();
+    saveTaggerSettings();
+    repredictSoon();
+  };
+  $("tg-hy-conf").addEventListener("input", (e) => {
+    $("tg-hy-conf-val").textContent = Number(e.target.value).toFixed(2);
+  });
+  $("tg-hy-conf").addEventListener("change", (e) => hydraSet("confidence", Number(e.target.value)));
+  $("tg-hy-impl").addEventListener("change", (e) => hydraSet("implications", e.target.value));
+  $("tg-hy-aliases").addEventListener("change", (e) => hydraSet("aliases", e.target.checked));
 }
+
+const repredictSoon = debounce(() => {
+  const it = tg.filtered[tg.sel];
+  if (tg.preds && it && tg.preds.key === tgKey(it) && modelKind(tg.preds.model) === "hydra35") predictTaggerImage();
+}, 500);
 
 const saveTaggerSettings = debounce(async () => {
   try {

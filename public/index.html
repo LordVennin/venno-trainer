@@ -589,10 +589,26 @@
                             <div class="form-group"><label>&nbsp;</label><div><button id="tg-unload" class="btn btn-sm">Unload model now</button></div></div>
                         </div>
                         <h4>Tag Selection</h4>
-                        <div class="form-row">
+                        <div class="form-row hidden" id="tg-hydra-fields">
+                            <div class="form-group"><label>Confidence <span id="tg-hy-conf-val" class="chip"></span></label><input type="range" id="tg-hy-conf" min="0" max="1" step="0.05"><small>Hydra's per-tag thresholds, calibrated on its validation set: 0 = more tags (speculative), 0.5 = balanced, 1 = fewer, surer tags.</small></div>
+                            <div class="form-group"><label>Implications</label><select id="tg-hy-impl">
+                                <option value="inherit">Inherit (recommended)</option>
+                                <option value="enforce-inherit">Enforce + inherit (strict)</option>
+                                <option value="preserve">Preserve</option>
+                                <option value="constrain">Constrain (cautious)</option>
+                                <option value="remove">Remove implied tags</option>
+                                <option value="off">Off (raw output)</option>
+                            </select><small id="tg-hy-impl-hint"></small></div>
+                            <div class="form-group"><label>&nbsp;</label><label class="hint inline"><input type="checkbox" id="tg-hy-aliases"> Older e621 tag names</label><small>Hydra's 2024-04 aliases (128 renames such as vulva → pussy) for models trained on older e621 tags, e.g. NoobAI.</small></div>
+                        </div>
+                        <div class="form-row" id="tg-threshold-fields">
                             <div class="form-group"><label>General Threshold</label><input type="number" id="tg-th-general" step="0.01" min="0" max="1"><small id="tg-th-general-hint"></small></div>
                             <div class="form-group"><label>Character Threshold</label><input type="number" id="tg-th-character" step="0.01" min="0" max="1"><small>Characters, copyrights and artists.</small></div>
+                        </div>
+                        <div class="form-row">
                             <div class="form-group"><label>Max Tags</label><input type="number" data-t="max_tags" min="0"><small>0 = no limit.</small></div>
+                            <div class="form-group"></div>
+                            <div class="form-group"></div>
                         </div>
                         <div class="form-group"><label>Include Categories</label><div id="tg-cats" class="checkbox-group"></div></div>
                         <div class="form-row">

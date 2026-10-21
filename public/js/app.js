@@ -1151,7 +1151,8 @@ async function checkPython() {
     (r.cuda ? `GPU: ${escapeHtml(r.gpu)}` : '<span style="color:var(--warning)">no CUDA GPU</span>') +
     (missing.length ? ` · <span style="color:var(--danger)">missing: ${missing.join(", ")}</span>` : " · packages OK") +
     (r.fla ? "" : " · tip: pip install flash-linear-attention speeds up MOSS caption encoding") +
-    (r.timm ? "" : ' · <span style="color:var(--warning)">the Tagger needs timm: run ./setup.sh again</span>');
+    (r.timm ? "" : ' · <span style="color:var(--warning)">the Tagger needs timm: run ./setup.sh again</span>') +
+    (r.pyvips || !r.timm ? "" : ' · <span style="color:var(--warning)">Hydra 3.5 needs pyvips: run ./setup.sh again</span>');
 }
 
 async function saveGlobalSettings() {

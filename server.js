@@ -58,7 +58,9 @@ function defaultSettings() {
       idle_unload_min: 10, // free the model's memory after this long unused
       wd: { general: 0.35, character: 0.85 },
       jtp3: { general: 0.65, character: 0.75 },
-      include: { general: true, species: true, character: true, copyright: true, artist: false, meta: false, lore: false, rating: false },
+      // Hydra 3.5 picks tags itself: confidence 0 = speculative .. 0.5 = balanced .. 1 = confident
+      hydra35: { confidence: 0.5, implications: "inherit", aliases: false },
+      include: { general: true, color: true, species: true, character: true, copyright: true, artist: false, contributor: false, meta: false, lore: false, rating: false },
       exclude: "",
       prefix: "",
       max_tags: 0,
@@ -465,7 +467,7 @@ app.post("/api/tagger/predict", h(async (req, res) => {
   const { dir, name } = req.body || {};
   const image = imageInFolder(String(dir || ""), String(name || ""));
   const args = taggerArgs(req.body || {});
-  const r = await taggerService.tag([image], { ...args, floor: 0.05 });
+  const r = await taggerService.tag([image], { ...args, floor: 0.05, options: (req.body || {}).model_options });
   armIdleUnload();
   broadcastAll({ type: "tagger", data: taggerState() });
   const out = r.results[0];
@@ -570,7 +572,7 @@ app.post("/api/system/check-python", h((req, res) => {
   const code = [
     "import importlib, json, sys",
     "out = {'python_version': sys.version.split()[0]}",
-    "for m in ['torch', 'transformers', 'safetensors', 'bitsandbytes', 'prodigyopt', 'fla', 'timm']:",
+    "for m in ['torch', 'transformers', 'safetensors', 'bitsandbytes', 'prodigyopt', 'fla', 'timm', 'pyvips']:",
     "    try:",
     "        mod = importlib.import_module(m); out[m] = getattr(mod, '__version__', 'ok')",
     "    except Exception as e:",

@@ -43,6 +43,35 @@ def make_wd_model(models_dir):
     return root
 
 
+class PickingTaggerTests(unittest.TestCase):
+    """run() with a tagger that picks its own tags, as Hydra 3.5 does."""
+
+    def test_picked_tags_are_marked_and_aliased(self):
+        import torch
+        from venno.tagger import models as M
+
+        class Fake:
+            tags = [("vulva", "general"), ("dragon", "species"), ("wings", "general"), ("safe", "rating")]
+            aliases = {"vulva": "pussy"}
+
+            def preprocess(self, path):
+                return torch.zeros(1)
+
+            def predict(self, batch):
+                return torch.tensor([[0.05, 0.9, 0.5, 0.99]] * len(batch))
+
+            def classify(self, row, opts):
+                assert opts["confidence"] == 0.8
+                # implications may raise a tag's probability or add a tag below the floor
+                return {"dragon": 0.9, "vulva": 0.95}
+
+        out = M.run(Fake(), ["a.png"], floor=0.3, options={"confidence": 0.8, "aliases": True})[0]["preds"]
+        self.assertEqual(out, [["safe", 0.99, "rating", False], ["pussy", 0.95, "general", True],
+                               ["dragon", 0.9, "species", True], ["wings", 0.5, "general", False]])
+        out = M.run(Fake(), ["a.png"], floor=0.3, options={"confidence": 0.8})[0]["preds"]
+        self.assertEqual(out[1][0], "vulva")
+
+
 @unittest.skipIf(timm is None, "timm not installed")
 class TaggerTests(unittest.TestCase):
     @classmethod

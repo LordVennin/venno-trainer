@@ -124,12 +124,21 @@ Models, downloaded into the models folder on first use:
 | Model | Tags | Size |
 |---|---|---|
 | WD EVA02-Large / ViT-Large / SwinV2 / ViT v3 ([SmilingWolf](https://huggingface.co/SmilingWolf)) | Danbooru | 0.4–1.3 GB |
+| Hydra 3.5 ([Project RedRocket](https://huggingface.co/RedRocket/Hydra)) | e621 with species and color categories; picks tags with per-tag calibrated thresholds and tag implications | 1.1 GB |
 | JTP-3 Hydra ([Project RedRocket](https://huggingface.co/RedRocket/Hydra)) | e621, including a species category | 1.0 GB |
+
+Hydra 3.5 runs RedRocket's own model, image loading and calibration code (vendored), so it tags
+exactly as their tagger does. Instead of thresholds it has a **Confidence** slider (0 = more,
+speculative tags; 0.5 = balanced; 1 = fewer, surer tags), an **Implications** mode (Inherit keeps
+tags implied by picked ones, e.g. western dragon → dragon; Remove drops them) and an option for the
+older e621 tag names some models were trained on. It needs Python 3.11+ and `pyvips` (installed by
+`setup.sh`, about 20 MB).
 
 The model stays loaded between images and is unloaded after 10 idle minutes (configurable).
 **Device: Auto** uses the GPU unless a training run is going, then the CPU, so tagging never
-takes VRAM from training; choose GPU to share the card anyway. The tagger needs `timm` and a
-matching `torchvision`: on an existing install, run `./setup.sh` again (it keeps your PyTorch).
+takes VRAM from training; choose GPU to share the card anyway. The tagger needs `timm`, a
+matching `torchvision` and `pyvips`: on an existing install, run `./setup.sh` again (it keeps
+your PyTorch).
 
 ## Training, saving, resuming
 
@@ -164,7 +173,7 @@ server.js, lib/        Node UI server (jobs, launching, logs, dataset scans, tag
 public/                web UI; schema.js (job schema) and tags.js (caption tags) are shared with the server
 trainer/venno/         Python trainer
   train.py             entry point: caching, training loop, saves, samples, resume
-  tagger/              auto-tagging service (WD v3, JTP-3 Hydra) and thumbnails
+  tagger/              auto-tagging service (WD v3, JTP-3, Hydra 3.5) and thumbnails
   data.py, cache.py    datasets, captions, buckets, latent/text caches
   lora.py, fp8.py      LoRA modules, fp8 base-weight storage
   models/anima/        Anima DiT + Wan VAE (Apache-2.0, from the Anima Standalone Trainer)
