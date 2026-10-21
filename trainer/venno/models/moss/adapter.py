@@ -6,8 +6,11 @@ and ai-toolkit's moss_image: timestep = sigma * 1000, target = noise - clean,
 CFG negative branch skips DiT block 22, LoRA saved in ComfyUI's
 diffusion_model.layers.N.proj.{q,k,v,o,...} layout."""
 
+import contextlib
 import json
 import os
+import signal
+import threading
 from typing import Dict, List
 
 import torch
@@ -56,11 +59,90 @@ def resolve_model_root(paths, variant, models_dir, hf_token=None):
     repo = root or VARIANT_REPOS.get(variant, VARIANT_REPOS["sft"])
     if repo.count("/") != 1:
         raise FileNotFoundError(f"MOSS-Image model folder not found: {repo}")
+    target = os.path.join(models_dir, repo.replace("/", "__"))
+    if download_complete(target):
+        print(f"Model files: {target}", flush=True)
+        return target
     from huggingface_hub import snapshot_download
 
-    target = os.path.join(models_dir, repo.replace("/", "__"))
-    print(f"Fetching {repo} into {target} (resumes if interrupted; ~30 GB the first time)", flush=True)
-    return snapshot_download(repo, allow_patterns=DOWNLOAD_PATTERNS, local_dir=target, token=hf_token or None)
+    print(f"Downloading {repo} into {target} (~27 GB the first time; resumes if interrupted)", flush=True)
+    with _download_monitor(target), _exit_on_stop():
+        root = snapshot_download(repo, allow_patterns=DOWNLOAD_PATTERNS, local_dir=target, token=hf_token or None)
+    print("Download complete", flush=True)
+    return root
+
+
+def download_complete(root):
+    """Whether a diffusers-layout MOSS folder has every file the trainer reads.
+    The Hub client writes to a hidden *.incomplete file and renames it when
+    done, so a shard under its final name is a finished shard."""
+    need = ["model_index.json", "tokenizer/tokenizer.json", "tokenizer/tokenizer_config.json"]
+    for part in ("transformer", "text_encoder", "vae"):
+        folder = os.path.join(root, part)
+        need.append(f"{part}/config.json")
+        if not os.path.isdir(folder):
+            return False
+        index = [n for n in os.listdir(folder) if n.endswith(".safetensors.index.json")]
+        if index:
+            try:
+                with open(os.path.join(folder, index[0]), encoding="utf-8") as f:
+                    shards = set(json.load(f)["weight_map"].values())
+            except (OSError, ValueError, KeyError):
+                return False
+            need += [f"{part}/{s}" for s in shards]
+        elif not any(n.endswith(".safetensors") for n in os.listdir(folder)):
+            return False
+    return all(os.path.isfile(os.path.join(root, n)) for n in need)
+
+
+def _folder_bytes(root):
+    total = 0
+    for dirpath, _, names in os.walk(root):
+        for n in names:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, n))
+            except OSError:
+                pass
+    return total
+
+
+@contextlib.contextmanager
+def _download_monitor(target, every=20.0):
+    """Log how much has arrived every `every` seconds, so a long download (or
+    one waiting on the network) does not look like a hang."""
+    stop = threading.Event()
+
+    def report():
+        while not stop.wait(every):
+            print(f"Downloading... {_folder_bytes(target) / 1e9:.1f} GB in {target}", flush=True)
+
+    thread = threading.Thread(target=report, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+
+
+@contextlib.contextmanager
+def _exit_on_stop():
+    """Stop during a download exits at once: nothing needs saving, and the
+    partial files resume on the next run. (The trainer's normal stop handler
+    only sets a flag, which a download never checks.)"""
+
+    def handler(signum, frame):
+        print("Stopped during the model download; it resumes on the next run.", flush=True)
+        os._exit(130)
+
+    try:
+        previous = {s: signal.signal(s, handler) for s in (signal.SIGINT, signal.SIGTERM)}
+    except ValueError:  # not the main thread
+        previous = {}
+    try:
+        yield
+    finally:
+        for s, h in previous.items():
+            signal.signal(s, h)
 
 
 class MossAdapter(base.ModelAdapter):
@@ -78,6 +160,9 @@ class MossAdapter(base.ModelAdapter):
         self.vae = None
         self.dit = None
         self.vae_dtype = torch.float32  # the vendor decodes in fp32
+
+    def fetch_models(self):
+        self.model_root()
 
     def model_root(self):
         if self.root is None:

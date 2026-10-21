@@ -483,6 +483,7 @@ class Trainer:
     # ------------------------------------------------------------------ run
     def train(self):
         self.prepare_dataset()
+        self.adapter.fetch_models()
         self.cache_latents()
         self.cache_text()
         self.setup_model()

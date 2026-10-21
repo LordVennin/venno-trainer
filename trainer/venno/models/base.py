@@ -29,6 +29,9 @@ class ModelAdapter:
         self.device = device
         self.dtype = dtype
 
+    def fetch_models(self):
+        """Download missing model files before caching starts (no-op by default)."""
+
     # text ---------------------------------------------------------------
     def load_text_encoder(self): ...
     def unload_text_encoder(self): ...

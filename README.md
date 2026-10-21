@@ -36,7 +36,10 @@ Then open **⚙️ Global Settings**:
 - **MOSS-Image**: leave the model folder blank to download the selected variant
   ([SFT](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) or
   [Base](https://huggingface.co/OpenMOSS-Team/MOSS-Image-Base), about 27 GB) into the models folder
-  on first use, or point it at a folder you already downloaded. Optional overrides take a
+  on first use, or point it at a folder you already downloaded. The download runs before caching,
+  logs its progress, and resumes if stopped; once every file is there, later runs use the folder
+  without contacting the Hub. The weights come as numbered shards
+  (`model-00001-of-00004.safetensors` …), which is normal. Optional overrides take a
   fine-tuned transformer, another text encoder or the full-decoder FLUX.2 VAE.
 
 ## Memory on a 24 GB card

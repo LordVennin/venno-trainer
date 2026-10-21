@@ -168,6 +168,38 @@ class AnimaTests(unittest.TestCase):
             self.assertTrue(torch.allclose(sd[k].float(), again[k].float()), k)  # lr 0 keeps the loaded weights
 
 
+class MossDownloadTests(unittest.TestCase):
+    def test_download_complete(self):
+        from venno.models.moss.adapter import download_complete
+
+        root = tempfile.mkdtemp(prefix="venno_dl_")
+        self.addCleanup(shutil.rmtree, root, True)
+        files = {
+            "model_index.json": "{}",
+            "tokenizer/tokenizer.json": "{}",
+            "tokenizer/tokenizer_config.json": "{}",
+            "transformer/config.json": "{}",
+            "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                {"weight_map": {"a": "diffusion_pytorch_model-00001-of-00002.safetensors",
+                                "b": "diffusion_pytorch_model-00002-of-00002.safetensors"}}),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": "",
+            "transformer/diffusion_pytorch_model-00002-of-00002.safetensors": "",
+            "text_encoder/config.json": "{}",
+            "text_encoder/model.safetensors": "",
+            "vae/config.json": "{}",
+            "vae/diffusion_pytorch_model.safetensors": "",
+        }
+        for name, text in files.items():
+            os.makedirs(os.path.dirname(os.path.join(root, name)), exist_ok=True)
+            with open(os.path.join(root, name), "w") as f:
+                f.write(text)
+        self.assertTrue(download_complete(root))
+        # an interrupted download leaves the shard as a hidden *.incomplete file
+        os.remove(os.path.join(root, "transformer/diffusion_pytorch_model-00002-of-00002.safetensors"))
+        self.assertFalse(download_complete(root))
+        self.assertFalse(download_complete(os.path.join(root, "missing")))
+
+
 class MossTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
