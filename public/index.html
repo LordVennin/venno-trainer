@@ -31,6 +31,7 @@
             </div>
             <div id="job-list" class="job-list"></div>
             <div class="sidebar-footer">
+                <button id="btn-tagger" class="btn btn-ghost btn-block" title="Browse, tag and auto-tag dataset images">🏷️ Tagger</button>
                 <button id="btn-global-settings" class="btn btn-ghost btn-block">⚙️ Global Settings</button>
             </div>
         </aside>
@@ -501,6 +502,130 @@
                     </div>
                 </div>
             </div>
+            <!-- ================================================ Tagger -->
+            <div id="tagger-view" class="job-editor hidden">
+                <header class="editor-header">
+                    <div class="editor-title">
+                        <h2>🏷️ Tagger</h2>
+                        <span id="tg-source-label" class="hint"></span>
+                    </div>
+                    <div class="editor-actions">
+                        <button id="tg-undo" class="btn" disabled title="Undo the last bulk edit or auto-tag run">↶ Undo</button>
+                        <button id="tg-close" class="btn btn-ghost">Close</button>
+                    </div>
+                </header>
+                <div class="tg-source">
+                    <select id="tg-folder-pick" title="Folders of the selected job"></select>
+                    <input type="text" id="tg-path" placeholder="/path/to/images">
+                    <label class="inline hint">Captions <input type="text" id="tg-ext" value=".txt" style="width:64px;"></label>
+                    <button id="tg-load" class="btn btn-primary btn-sm">Load</button>
+                </div>
+                <div class="tabs" id="tg-tabs">
+                    <button class="tab active" data-tgtab="images">Images</button>
+                    <button class="tab" data-tgtab="tags">Tag Counts</button>
+                    <button class="tab" data-tgtab="auto">Auto-Tag</button>
+                </div>
+                <div class="tab-content tg-content">
+                    <!-- images -->
+                    <div id="tg-pane-images" class="tg-pane">
+                        <div class="dataset-toolbar">
+                            <input type="text" id="tg-filter" placeholder="Filter: fox, -solo, *fur*, name:001" style="width:280px;" title="Comma-separated terms, all must match. tag = has it, -tag = lacks it, *part* = any tag containing it, name:text = file name contains it">
+                            <select id="tg-show">
+                                <option value="all">All images</option>
+                                <option value="uncaptioned">Uncaptioned</option>
+                                <option value="captioned">Captioned</option>
+                            </select>
+                            <span id="tg-count" class="hint"></span>
+                            <span style="flex:1"></span>
+                            <label class="hint inline">Size <input type="range" id="tg-thumb" min="90" max="320" value="150"></label>
+                        </div>
+                        <div class="tg-layout">
+                            <div class="tg-gridwrap">
+                                <div id="tg-grid" class="tg-grid"></div>
+                                <div class="tg-pager">
+                                    <button id="tg-prev-page" class="btn btn-sm">← Prev</button>
+                                    <span id="tg-page" class="hint"></span>
+                                    <button id="tg-next-page" class="btn btn-sm">Next →</button>
+                                </div>
+                                <div id="tg-empty" class="empty-state hidden" style="padding:40px;"><div class="empty-icon">🖼️</div><p>Load a folder to see its images.</p></div>
+                            </div>
+                            <aside id="tg-editor" class="tg-editor">
+                                <p class="hint">Select an image to edit its tags.</p>
+                            </aside>
+                        </div>
+                    </div>
+
+                    <!-- tag counts -->
+                    <div id="tg-pane-tags" class="tg-pane hidden">
+                        <div id="tg-tag-summary" class="dataset-summary"></div>
+                        <div class="note" id="tg-tag-scope"></div>
+                        <div class="global-settings-bar">
+                            <div class="compact-input"><label>Add tag</label><input type="text" id="tg-add-tag" placeholder="e.g. sks fox" style="width:180px;"></div>
+                            <div class="compact-input"><label>Position</label><select id="tg-add-pos"><option value="start">Start</option><option value="end">End</option></select></div>
+                            <button id="tg-add-btn" class="btn btn-sm btn-primary">Add to images</button>
+                            <span style="flex:1"></span>
+                            <div class="compact-input"><label>Search tags</label><input type="text" id="tg-tag-search" placeholder="fur" style="width:160px;"></div>
+                            <div class="compact-input"><label>Sort</label><select id="tg-tag-sort"><option value="count">Most used</option><option value="rare">Least used</option><option value="name">Name</option></select></div>
+                        </div>
+                        <div id="tg-tag-table" class="tg-tag-table"></div>
+                        <div class="tg-pager"><button id="tg-tags-more" class="btn btn-sm hidden">Show more</button></div>
+                    </div>
+
+                    <!-- auto-tag -->
+                    <div id="tg-pane-auto" class="tg-pane hidden">
+                        <div class="note" id="tg-service"></div>
+                        <h4>Model</h4>
+                        <div class="form-row">
+                            <div class="form-group"><label>Tagger Model</label><select id="tg-model" data-t="model"></select><small id="tg-model-hint"></small></div>
+                            <div class="form-group"><label>Device</label><select data-t="device">
+                                <option value="auto">Auto (GPU unless training is running)</option>
+                                <option value="cuda">GPU</option>
+                                <option value="cpu">CPU</option>
+                            </select><small>The model stays loaded between images; it is unloaded after the idle time below.</small></div>
+                            <div class="form-group"><label>Batch Size</label><input type="number" data-t="batch_size" min="1" max="64"><small>Images per GPU batch when tagging a folder.</small></div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group"><label>Unload After (minutes idle)</label><input type="number" data-t="idle_unload_min" min="0"><small>0 = keep loaded.</small></div>
+                            <div class="form-group"><label>&nbsp;</label><div><button id="tg-unload" class="btn btn-sm">Unload model now</button></div></div>
+                        </div>
+                        <h4>Tag Selection</h4>
+                        <div class="form-row">
+                            <div class="form-group"><label>General Threshold</label><input type="number" id="tg-th-general" step="0.01" min="0" max="1"><small id="tg-th-general-hint"></small></div>
+                            <div class="form-group"><label>Character Threshold</label><input type="number" id="tg-th-character" step="0.01" min="0" max="1"><small>Characters, copyrights and artists.</small></div>
+                            <div class="form-group"><label>Max Tags</label><input type="number" data-t="max_tags" min="0"><small>0 = no limit.</small></div>
+                        </div>
+                        <div class="form-group"><label>Include Categories</label><div id="tg-cats" class="checkbox-group"></div></div>
+                        <div class="form-row">
+                            <div class="form-group"><label>Always Add (trigger / prefix)</label><input type="text" data-t="prefix" placeholder="e.g. sks fox,"><small>Put first in every auto-tagged caption.</small></div>
+                            <div class="form-group"><label>Never Add</label><input type="text" data-t="exclude" placeholder="e.g. signature, watermark, simple background"><small>Comma-separated tags the model may suggest but you do not want.</small></div>
+                        </div>
+                        <div class="checkbox-group" style="margin-bottom:12px;">
+                            <label class="hint inline"><input type="checkbox" data-t="underscores"> Underscores → spaces</label>
+                            <label class="hint inline"><input type="checkbox" data-t="escape"> Escape parentheses <span class="chip" title="Prompt syntax; leave off for training captions">prompt syntax</span></label>
+                            <label class="hint inline">Order <select data-t="order"><option value="confidence">Most confident first</option><option value="alpha">Alphabetical</option></select></label>
+                        </div>
+                        <h4>Tag Many Images</h4>
+                        <div class="form-row">
+                            <div class="form-group"><label>Images</label><select id="tg-run-scope"></select></div>
+                            <div class="form-group"><label>Existing Captions</label><select data-t="mode">
+                                <option value="skip">Skip (tag only uncaptioned images)</option>
+                                <option value="append">Keep and add new tags</option>
+                                <option value="overwrite">Replace</option>
+                            </select></div>
+                        </div>
+                        <div class="inline" style="margin-bottom:10px;">
+                            <button id="tg-run" class="btn btn-primary">▶ Auto-tag</button>
+                            <button id="tg-cancel" class="btn btn-danger hidden">⏹ Cancel</button>
+                            <span id="tg-run-hint" class="hint"></span>
+                        </div>
+                        <div id="tg-progress" class="progress-wrap hidden">
+                            <div class="progress-line"><span id="tg-prog-text"></span><span id="tg-prog-eta"></span></div>
+                            <div class="progress-bar"><div id="tg-prog-fill"></div></div>
+                            <div id="tg-prog-errors" class="hint" style="margin-top:8px;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </main>
     </div>
 
@@ -638,6 +763,19 @@
         </div>
     </div>
 
+    <!-- Text input -->
+    <div id="modal-prompt" class="modal hidden">
+        <div class="modal-content">
+            <h3 id="prompt-title">Enter</h3>
+            <p id="prompt-message" class="hint"></p>
+            <div class="form-group"><input type="text" id="prompt-input"></div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" data-close="modal-prompt">Cancel</button>
+                <button id="btn-prompt-ok" class="btn btn-primary">OK</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Global settings -->
     <div id="modal-global-settings" class="modal hidden">
         <div class="modal-content modal-large">
@@ -656,7 +794,9 @@
     <div id="hw-monitor" class="hw-monitor"><span>GPU monitor: connecting…</span></div>
 
     <script src="js/schema.js"></script>
+    <script src="js/tags.js"></script>
     <script src="js/app.js"></script>
+    <script src="js/tagger.js"></script>
 </body>
 
 </html>

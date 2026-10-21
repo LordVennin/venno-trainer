@@ -9,9 +9,11 @@ const { spawn, execFile } = require("child_process");
 const WebSocket = require("ws");
 
 const S = require("./public/js/schema");
+const T = require("./public/js/tags");
 const native = require("./lib/native");
 const { scanFolder, listSubfolders, imageInFolder, writeCaption, IMAGE_EXTS } = require("./lib/datasets");
 const { Runner, resolvePython, launchScript } = require("./lib/runner");
+const tagger = require("./lib/tagger");
 
 const args = process.argv.slice(2);
 const argVal = (name, dflt) => {
@@ -49,6 +51,23 @@ function defaultSettings() {
     models,
     hf_token: "",
     theme: "github-dark",
+    tagger: {
+      model: "wd-eva02-large-v3",
+      device: "auto", // auto = GPU unless a training run is using it
+      batch_size: 4,
+      idle_unload_min: 10, // free the model's memory after this long unused
+      wd: { general: 0.35, character: 0.85 },
+      jtp3: { general: 0.65, character: 0.75 },
+      include: { general: true, species: true, character: true, copyright: true, artist: false, meta: false, lore: false, rating: false },
+      exclude: "",
+      prefix: "",
+      max_tags: 0,
+      order: "confidence",
+      underscores: true, // replace underscores with spaces
+      escape: false, // escape parentheses (prompt syntax; off for training captions)
+      mode: "skip", // existing captions: skip | append | overwrite
+      thumb_size: 256,
+    },
   };
 }
 
@@ -334,6 +353,163 @@ app.post("/api/datasets/subfolders", h((req, res) => {
   res.json(listSubfolders(String(req.body.path || "").trim(), req.body.caption_ext || ".txt"));
 }));
 
+// ------------------------------------------------------------------ tagger
+
+const taggerService = new tagger.TaggerService({
+  python: () => pythonFor(getSettings()),
+  cwd: native.TRAINER_DIR,
+  env: () => {
+    const s = getSettings();
+    const env = { PYTHONPATH: native.TRAINER_DIR, PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True" };
+    if (s.hf_token) env.HF_TOKEN = s.hf_token;
+    return env;
+  },
+});
+const taggerDir = () => path.join(native.resolveDirs(getSettings()).cache, "tagger");
+const thumbnails = new tagger.Thumbnails(taggerService, () => path.join(taggerDir(), "thumbs"));
+const taggerUndo = new tagger.UndoStore(() => path.join(taggerDir(), "undo.json"));
+let tagRun = null;
+let idleTimer = null;
+
+function broadcastAll(msg) {
+  const payload = JSON.stringify(msg);
+  for (const ws of wss.clients) if (ws.readyState === WebSocket.OPEN) ws.send(payload);
+}
+
+function taggerState() {
+  return {
+    service: { running: taggerService.running, loaded: taggerService.loaded, status: taggerService.status },
+    run: tagRun && { ...tagRun.state, errors: tagRun.state.errors.slice(-50), error_count: tagRun.state.errors.length },
+    training: runner.runs.size > 0,
+  };
+}
+
+taggerService.on("status", () => broadcastAll({ type: "tagger", data: taggerState() }));
+taggerService.on("exit", () => broadcastAll({ type: "tagger", data: taggerState() }));
+
+// GPU unless a training run is using it (the tagger would compete for VRAM)
+function taggerDevice(requested) {
+  if (requested === "cuda" || requested === "cpu") return requested;
+  return runner.runs.size ? "cpu" : "cuda";
+}
+
+function taggerArgs(body) {
+  const s = getSettings();
+  const t = s.tagger;
+  return {
+    model: body.model || t.model,
+    device: taggerDevice(body.device || t.device),
+    models_dir: native.resolveDirs(s).models,
+    hf_token: s.hf_token,
+    batch_size: Math.max(1, parseInt(body.batch_size || t.batch_size, 10) || 4),
+  };
+}
+
+function armIdleUnload() {
+  clearTimeout(idleTimer);
+  const min = Number(getSettings().tagger.idle_unload_min);
+  if (!(min > 0)) return;
+  idleTimer = setTimeout(() => {
+    if (tagRun && tagRun.state.state === "running") return armIdleUnload();
+    taggerService.unload().then(() => broadcastAll({ type: "tagger", data: taggerState() })).catch(() => {});
+  }, min * 60000);
+  idleTimer.unref();
+}
+
+app.get("/api/tagger/state", h((req, res) => res.json(taggerState())));
+
+app.get("/api/tagger/models", h(async (req, res) => {
+  const r = await taggerService.request("models", { models_dir: native.resolveDirs(getSettings()).models });
+  res.json({ models: r.models, categories: T.CATEGORIES });
+}));
+
+// Every image of the folders with its caption.
+app.post("/api/tagger/list", h((req, res) => {
+  const { dirs = [], caption_ext = ".txt" } = req.body || {};
+  const items = [];
+  const missing = [];
+  for (const d of dirs) {
+    const dir = String(d || "").trim();
+    const list = tagger.listFolder(dir, caption_ext);
+    if (list) items.push(...list);
+    else missing.push(dir);
+  }
+  res.json({ items, missing });
+}));
+
+app.get("/api/tagger/thumb", async (req, res) => {
+  let image;
+  try {
+    image = imageInFolder(String(req.query.dir || ""), String(req.query.name || ""));
+  } catch (e) {
+    return res.status(e.status || 400).end();
+  }
+  const size = Math.min(1024, Math.max(64, parseInt(req.query.size, 10) || getSettings().tagger.thumb_size || 256));
+  try {
+    res.set("Cache-Control", "private, max-age=86400");
+    res.sendFile(await thumbnails.get(image, size));
+  } catch (e) {
+    res.sendFile(image); // no thumbnail (tagger environment missing?): the image itself
+  }
+});
+
+app.post("/api/tagger/caption", h((req, res) => {
+  const { dir, name, caption_ext = ".txt", text = "" } = req.body || {};
+  const file = tagger.captionPath(imageInFolder(String(dir || ""), String(name || "")), caption_ext);
+  tagger.writeCaptionFile(file, text);
+  res.json({ ok: true, path: file, caption: String(text).trim() ? String(text).trim() : null });
+}));
+
+// Raw predictions for one image; the UI applies thresholds and options.
+app.post("/api/tagger/predict", h(async (req, res) => {
+  const { dir, name } = req.body || {};
+  const image = imageInFolder(String(dir || ""), String(name || ""));
+  const args = taggerArgs(req.body || {});
+  const r = await taggerService.tag([image], { ...args, floor: 0.05 });
+  armIdleUnload();
+  broadcastAll({ type: "tagger", data: taggerState() });
+  const out = r.results[0];
+  if (out.error) return res.status(400).json({ error: out.error });
+  res.json({ preds: out.preds, device: r.device, model: args.model });
+}));
+
+app.post("/api/tagger/run", h((req, res) => {
+  if (tagRun && tagRun.state.state === "running") return res.status(409).json({ error: "An auto-tag run is already going" });
+  const { items = [], caption_ext = ".txt", options = {}, mode = "skip" } = req.body || {};
+  if (!items.length) return res.status(400).json({ error: "No images to tag" });
+  if (!["skip", "append", "overwrite"].includes(mode)) return res.status(400).json({ error: "Unknown write mode" });
+  const args = taggerArgs(req.body);
+  tagRun = new tagger.TagRun(taggerService, taggerUndo, { items, captionExt: caption_ext, options, mode, ...args });
+  tagRun.on("progress", () => broadcastAll({ type: "tagger", data: taggerState() }));
+  tagRun.run().finally(armIdleUnload);
+  res.json({ ok: true, state: taggerState() });
+}));
+
+app.post("/api/tagger/cancel", h((req, res) => {
+  if (tagRun) tagRun.cancel();
+  res.json({ ok: true });
+}));
+
+app.post("/api/tagger/unload", h(async (req, res) => {
+  if (tagRun && tagRun.state.state === "running") return res.status(409).json({ error: "An auto-tag run is going" });
+  await taggerService.unload();
+  res.json(taggerState());
+}));
+
+app.post("/api/tagger/bulk", h((req, res) => {
+  const { items = [], caption_ext = ".txt", op = {} } = req.body || {};
+  const label = op.type === "rename" ? `Rename "${op.tag}" to "${op.to}"` : op.type === "remove" ? `Remove "${op.tag}"` : `Add "${op.tag}"`;
+  res.json({ changed: tagger.bulkEdit(items, caption_ext, op, taggerUndo, `${label} (${items.length} images)`) });
+}));
+
+app.get("/api/tagger/undo", h((req, res) => res.json({ entries: taggerUndo.list() })));
+
+app.post("/api/tagger/undo", h((req, res) => {
+  const r = taggerUndo.undo();
+  if (!r) return res.status(400).json({ error: "Nothing to undo" });
+  res.json(r);
+}));
+
 // ------------------------------------------------------------------ system
 
 function openNative(target) {
@@ -394,7 +570,7 @@ app.post("/api/system/check-python", h((req, res) => {
   const code = [
     "import importlib, json, sys",
     "out = {'python_version': sys.version.split()[0]}",
-    "for m in ['torch', 'transformers', 'safetensors', 'bitsandbytes', 'prodigyopt', 'fla']:",
+    "for m in ['torch', 'transformers', 'safetensors', 'bitsandbytes', 'prodigyopt', 'fla', 'timm']:",
     "    try:",
     "        mod = importlib.import_module(m); out[m] = getattr(mod, '__version__', 'ok')",
     "    except Exception as e:",
@@ -490,6 +666,7 @@ setInterval(() => {
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
     runner.stopAll();
+    taggerService.stop();
     setTimeout(() => process.exit(0), 500);
   });
 }
@@ -500,4 +677,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, server, runner };
+module.exports = { app, server, runner, taggerService };

@@ -104,6 +104,7 @@ function connectWS() {
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === "jobs-changed") return loadJobs();
+    if (msg.type === "tagger") return onTaggerMessage(msg.data);
     if (msg.job !== currentJob) return;
     if (msg.type === "log") {
       if (msg.replace) resetConsole();
@@ -140,8 +141,13 @@ function renderJobList() {
 }
 
 function trySelectJob(name) {
-  if (name === currentJob) return;
-  if (isDirty()) {
+  if (name === currentJob) return taggerOpen() && closeTagger();
+  if (taggerOpen() && tgUnsaved()) {
+    showConfirm("Unsaved caption", "Discard the unsaved caption edit in the Tagger?", () => {
+      tg.sel = -1;
+      trySelectJob(name);
+    }, "Discard");
+  } else if (isDirty()) {
     showConfirm("Unsaved changes", `Discard unsaved changes to "${currentJob}"?`, () => selectJob(name), "Discard");
   } else selectJob(name);
 }
@@ -152,6 +158,7 @@ async function selectJob(name) {
   job = data.job;
   savedSnapshot = snapshot(job);
   selectedFolders.clear();
+  $("tagger-view").classList.add("hidden");
   $("empty-state").classList.add("hidden");
   $("job-editor").classList.remove("hidden");
   renderJobList();
@@ -502,6 +509,7 @@ function renderDatasets() {
         <span class="chip" title="Share of each epoch">${share.toFixed(1)}%</span>
         <button class="btn-icon ds-up" title="Move up" ${idx === 0 ? "disabled" : ""}>↑</button>
         <button class="btn-icon ds-down" title="Move down" ${idx === folders.length - 1 ? "disabled" : ""}>↓</button>
+        <button class="btn-icon ds-tag" title="Open in the Tagger" ${f.path.trim() ? "" : "disabled"}>🏷️</button>
         <button class="btn-icon ds-dup" title="Duplicate">⧉</button>
         <button class="btn-icon ds-del" title="Delete" ${folders.length <= 1 ? "disabled" : ""}>🗑</button>
       </div>
@@ -577,6 +585,7 @@ function renderDatasets() {
     };
     card.querySelector(".ds-up").onclick = () => moveFolder(idx, -1);
     card.querySelector(".ds-down").onclick = () => moveFolder(idx, 1);
+    card.querySelector(".ds-tag").onclick = () => openTagger([f.path.trim()]);
     card.querySelector(".ds-dup").onclick = () => {
       const copy = JSON.parse(JSON.stringify(f));
       copy.path = "";
@@ -1141,7 +1150,8 @@ async function checkPython() {
   box.innerHTML = `Python ${escapeHtml(r.python_version)} · torch ${escapeHtml(r.torch || "missing")} · ` +
     (r.cuda ? `GPU: ${escapeHtml(r.gpu)}` : '<span style="color:var(--warning)">no CUDA GPU</span>') +
     (missing.length ? ` · <span style="color:var(--danger)">missing: ${missing.join(", ")}</span>` : " · packages OK") +
-    (r.fla ? "" : " · tip: pip install flash-linear-attention speeds up MOSS caption encoding");
+    (r.fla ? "" : " · tip: pip install flash-linear-attention speeds up MOSS caption encoding") +
+    (r.timm ? "" : ' · <span style="color:var(--warning)">the Tagger needs timm: run ./setup.sh again</span>');
 }
 
 async function saveGlobalSettings() {
@@ -1451,7 +1461,7 @@ function bindEvents() {
   $("btn-check-python").onclick = () => checkPython().catch((e) => showToast(e.message));
 
   document.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === "s" && job) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "s" && job && !taggerOpen()) {
       e.preventDefault();
       if (isDirty()) saveJob().catch((err) => showToast(err.message));
     }

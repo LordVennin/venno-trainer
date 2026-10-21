@@ -18,7 +18,13 @@ if [ ! -x venv/bin/python ]; then
 fi
 venv/bin/python -m pip install --upgrade pip
 echo "Installing PyTorch from $TORCH_INDEX ..."
-venv/bin/pip install torch --index-url "$TORCH_INDEX"
+# torchvision comes from the same index, matched to the installed torch, so
+# the tagger's timm cannot pull a mismatched build (pip would replace torch)
+if TORCH_VER=$(venv/bin/python -c "import torch; print(torch.__version__.split('+')[0])" 2>/dev/null); then
+    venv/bin/pip install torchvision "torch==$TORCH_VER" --index-url "$TORCH_INDEX"
+else
+    venv/bin/pip install torch torchvision --index-url "$TORCH_INDEX"
+fi
 venv/bin/pip install -r trainer/requirements.txt
 if [ "${FAST_KERNELS:-1}" = "1" ]; then
     venv/bin/pip install flash-linear-attention || echo "(optional) flash-linear-attention failed to install; MOSS caption caching will use the slower PyTorch path."

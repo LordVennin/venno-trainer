@@ -98,6 +98,39 @@ Caches (latents and caption embeddings) are keyed by image and caption content a
 job, so a dataset is encoded once per model. *Global Settings → Trainer* shows their size and
 can clear them.
 
+## Tagger
+
+**🏷️ Tagger** (sidebar, or the 🏷️ button on a dataset card) works on one folder or on every folder
+of the selected job:
+
+- **Images**: thumbnail grid with a caption editor. Click a tag chip's × to remove it; Ctrl+S
+  saves, Ctrl+Enter saves and opens the next image, Alt+← / Alt+→ move between images. Filter with
+  comma-separated terms: `fox, -solo` (has fox, lacks solo), `*fur*` (any tag containing "fur"),
+  `name:001`, or show only uncaptioned images. Saving an empty caption deletes its file.
+- **✨ Auto-tag this image** runs the tagger on the selected image only and lists its suggestions
+  with confidences. Those above your thresholds are ticked; add them to the caption or replace the
+  caption, then save.
+- **Tag Counts**: how many images use each tag, unique tags, tags per image, and tags written
+  several ways (`red_fur` / `Red fur`). Rename, remove or unify a tag, or add one (e.g. a trigger
+  word) at the start or end. Counts and edits cover the images the Images filter shows, so
+  filtering on a species tag lets you check and edit just that species.
+- **Auto-Tag**: tag many images at once, either only the uncaptioned ones, adding to existing
+  captions, or replacing them. Settings: thresholds, categories (e.g. leave out artist and meta tags),
+  tags to always add (your trigger) or never add, max tags, underscores → spaces.
+- **↶ Undo** reverts the last bulk edit or auto-tag run (the last 20 are kept).
+
+Models, downloaded into the models folder on first use:
+
+| Model | Tags | Size |
+|---|---|---|
+| WD EVA02-Large / ViT-Large / SwinV2 / ViT v3 ([SmilingWolf](https://huggingface.co/SmilingWolf)) | Danbooru | 0.4–1.3 GB |
+| JTP-3 Hydra ([Project RedRocket](https://huggingface.co/RedRocket/Hydra)) | e621, including a species category | 1.0 GB |
+
+The model stays loaded between images and is unloaded after 10 idle minutes (configurable).
+**Device: Auto** uses the GPU unless a training run is going, then the CPU, so tagging never
+takes VRAM from training; choose GPU to share the card anyway. The tagger needs `timm` and a
+matching `torchvision`: on an existing install, run `./setup.sh` again (it keeps your PyTorch).
+
 ## Training, saving, resuming
 
 - Epoch or step schedules, AdamW / AdamW8bit / PagedAdamW8bit / Adafactor / Prodigy, constant /
@@ -127,10 +160,11 @@ Multi-GPU training, full finetuning, Anima's Muon optimizer, block swapping and 
 ## Layout
 
 ```
-server.js, lib/        Node UI server (jobs, launching, logs, dataset scans)
-public/                web UI; public/js/schema.js is the job schema shared with the server
+server.js, lib/        Node UI server (jobs, launching, logs, dataset scans, tagger)
+public/                web UI; schema.js (job schema) and tags.js (caption tags) are shared with the server
 trainer/venno/         Python trainer
   train.py             entry point: caching, training loop, saves, samples, resume
+  tagger/              auto-tagging service (WD v3, JTP-3 Hydra) and thumbnails
   data.py, cache.py    datasets, captions, buckets, latent/text caches
   lora.py, fp8.py      LoRA modules, fp8 base-weight storage
   models/anima/        Anima DiT + Wan VAE (Apache-2.0, from the Anima Standalone Trainer)
