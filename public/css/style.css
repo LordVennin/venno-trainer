@@ -353,3 +353,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .tg-tag-count { font-variant-numeric: tabular-nums; }
 .tg-tag-actions { display: flex; gap: 4px; justify-content: flex-end; }
 @media (max-width: 1100px) { .tg-layout { grid-template-columns: 1fr; } .tg-editor { position: static; max-height: none; } }
+.tg-joy { border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 10px; background: var(--bg); }
+.tg-joy-text { font-size: 0.85rem; line-height: 1.45; margin: 4px 0 6px; }
+.tg-joy-prompt, .tg-cap-prompt { white-space: pre-wrap; font-family: var(--mono); font-size: 0.72rem; }
+.tg-joy-prompt { background: var(--bg-tertiary); padding: 6px; border-radius: 4px; margin: 4px 0 0; }
+.tg-cap-table { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-top: 10px; }
+.tg-cap-row { display: grid; grid-template-columns: 130px minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.6fr); gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 0.82rem; line-height: 1.4; align-items: start; }
+.tg-cap-row:last-child { border-bottom: none; }
+.tg-cap-row img { width: 120px; height: 120px; object-fit: cover; border-radius: 4px; background: var(--bg-tertiary); display: block; }
+.tg-cap-row .hint { word-break: break-word; }

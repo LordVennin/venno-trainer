@@ -9,9 +9,14 @@ Requests:
    "models_dir": dir, "floor": 0.1, "batch_size": 4, "options": {...}}
   (options: Hydra 3.5's confidence, implications, aliases, exclude_categories
    and exclude_tags)
+  {"cmd": "caption", "model": "joycaption-beta-one", "quant": "bf16"|"nf4",
+   "paths": [...], "prompts": [...], "models_dir": dir, "batch_size": 1,
+   "gen": {"temperature", "top_p", "max_new_tokens", "do_sample"}}
   {"cmd": "thumbs", "items": [{"src": path, "dst": path, "size": 320}]}
   {"cmd": "unload"} / {"cmd": "status"} / {"cmd": "models", "models_dir": dir}
-Model work runs on one worker thread (in order); thumbnails on a pool."""
+Model work runs on one worker thread (in order); thumbnails on a pool.
+One model is loaded at a time: asking for another (a tagger after JoyCaption
+or the reverse) unloads the current one first."""
 
 import json
 import os
@@ -56,8 +61,8 @@ def make_thumb(src, dst, size=320):
 
 class Service:
     def __init__(self):
-        self.tagger = None
-        self.loaded = None  # (model_id, device)
+        self.model = None  # the loaded tagger or captioner
+        self.loaded = None  # (model_id, device[, load mode])
         self.jobs = queue.Queue()
         self.pool = ThreadPoolExecutor(max_workers=max(2, min(8, (os.cpu_count() or 4) // 2)))
         self.threads = []
@@ -69,7 +74,7 @@ class Service:
             msg = self.jobs.get()
             if msg is None:
                 return
-            self._answer(msg, self._model_cmd)
+            self._answer(msg, self._model_cmd, loaded=True)
 
     def finish(self):
         """Answer everything already asked before exiting (stdin closed)."""
@@ -78,17 +83,20 @@ class Service:
         for t in self.threads:
             t.join()
 
-    def _answer(self, msg, fn):
+    def _answer(self, msg, fn, loaded=False):
         try:
-            send({"id": msg.get("id"), "ok": True, **fn(msg)})
+            out = fn(msg)
+            if loaded:  # what is in the model slot after this request
+                out["loaded"] = list(self.loaded) if self.loaded else None
+            send({"id": msg.get("id"), "ok": True, **out})
         except Exception as e:
             traceback.print_exc()
             send({"id": msg.get("id"), "ok": False, "error": str(e) or type(e).__name__})
 
     def _unload(self):
-        if self.tagger is None:
+        if self.model is None:
             return
-        self.tagger = None
+        self.model = None
         self.loaded = None
         import gc
 
@@ -114,12 +122,32 @@ class Service:
                     want = (want[0], "cpu")
             if self.loaded != want:
                 self._unload()
-                self.tagger = M.load(want[0], msg.get("models_dir") or "models", want[1], msg.get("hf_token"), status)
+                self.model = M.load(want[0], msg.get("models_dir") or "models", want[1], msg.get("hf_token"), status)
                 self.loaded = want
                 status(f"Ready: {M.MODELS[want[0]]['label']} on {want[1]}")
-            results = M.run(self.tagger, list(msg.get("paths") or []), floor=float(msg.get("floor", 0.1)),
+            results = M.run(self.model, list(msg.get("paths") or []), floor=float(msg.get("floor", 0.1)),
                             batch_size=max(1, int(msg.get("batch_size") or 4)), options=msg.get("options"))
             return {"results": results, "device": want[1]}
+        if cmd == "caption":
+            import torch
+
+            from . import joycaption as J
+
+            # an 8B model on the CPU takes minutes per image (the variable is for tests)
+            if not torch.cuda.is_available() and not os.environ.get("VENNO_CAPTION_ALLOW_CPU"):
+                raise RuntimeError("JoyCaption needs an NVIDIA GPU; none is available to this process.")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            want = (msg.get("model") or "joycaption-beta-one", device, msg.get("quant") or "bf16")
+            if self.loaded != want:
+                self._unload()
+                self.model = J.load(want[0], msg.get("models_dir") or "models", device, want[2], msg.get("hf_token"), status)
+                self.loaded = want
+                status(f"Ready: {J.CAPTIONERS[want[0]]['label']} on {device}")
+            paths, prompts = list(msg.get("paths") or []), list(msg.get("prompts") or [])
+            if len(paths) != len(prompts):
+                raise ValueError("Every image needs a prompt")
+            results = J.run(self.model, paths, prompts, batch_size=max(1, int(msg.get("batch_size") or 1)), **(msg.get("gen") or {}))
+            return {"results": results, "device": device}
         raise ValueError(f"Unknown command: {cmd}")
 
     def _thumbs(self, msg):
@@ -136,7 +164,7 @@ class Service:
 
     def handle(self, msg):
         cmd = msg.get("cmd")
-        if cmd in ("tag", "unload"):
+        if cmd in ("tag", "caption", "unload"):
             self.jobs.put(msg)
         elif cmd == "thumbs":
             t = threading.Thread(target=self._answer, args=(msg, self._thumbs), daemon=True)
@@ -149,8 +177,14 @@ class Service:
 
             def listing(m):
                 d = m.get("models_dir") or "models"
-                return {"models": [{"id": k, "label": v["label"], "kind": v["kind"], "gb": v["gb"],
-                                    "downloaded": M.is_downloaded(d, k)} for k, v in M.MODELS.items()]}
+                from . import joycaption as J
+
+                return {
+                    "models": [{"id": k, "label": v["label"], "kind": v["kind"], "gb": v["gb"],
+                                "downloaded": M.is_downloaded(d, k)} for k, v in M.MODELS.items()],
+                    "captioners": [{"id": k, "label": v["label"], "gb": v["gb"], "downloaded": J.is_downloaded(d, k)}
+                                   for k, v in J.CAPTIONERS.items()],
+                }
 
             self._answer(msg, listing)
         else:

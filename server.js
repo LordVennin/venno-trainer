@@ -10,10 +10,12 @@ const WebSocket = require("ws");
 
 const S = require("./public/js/schema");
 const T = require("./public/js/tags");
+const C = require("./public/js/captions");
 const native = require("./lib/native");
 const { scanFolder, listSubfolders, imageInFolder, writeCaption, IMAGE_EXTS } = require("./lib/datasets");
 const { Runner, resolvePython, launchScript } = require("./lib/runner");
 const tagger = require("./lib/tagger");
+const captioner = require("./lib/captioner");
 
 const args = process.argv.slice(2);
 const argVal = (name, dflt) => {
@@ -69,6 +71,27 @@ function defaultSettings() {
       escape: false, // escape parentheses (prompt syntax; off for training captions)
       mode: "skip", // existing captions: skip | append | overwrite
       thumb_size: 256,
+      // JoyCaption natural-language captions
+      caption: {
+        model: "joycaption-beta-one",
+        quant: "bf16", // bf16 (~17 GB) | nf4 (4-bit, ~7 GB)
+        device: "auto", // auto = GPU, refused while training runs | cuda = GPU even while training
+        batch_size: 1,
+        template: C.DEFAULT_TEMPLATE,
+        fallback_template: C.DEFAULT_FALLBACK,
+        length: "mixed", // short | medium | long | mixed (one per image)
+        hint_source: "caption", // caption = the image's caption file | tagger = run the selected tagger first
+        hint_include: { artist: false, contributor: false, meta: false, lore: false, rating: false },
+        max_tags: 60,
+        temperature: 0.6,
+        top_p: 0.9,
+        max_new_tokens: 512,
+        strip: C.DEFAULT_STRIP.join("\n"),
+        mode: "skip", // skip = only uncaptioned images | replace
+        backup: true, // keep the original tags in <image>.tags
+        skip_converted: true,
+        preview_n: 30,
+      },
     },
   };
 }
@@ -370,7 +393,9 @@ const taggerService = new tagger.TaggerService({
 const taggerDir = () => path.join(native.resolveDirs(getSettings()).cache, "tagger");
 const thumbnails = new tagger.Thumbnails(taggerService, () => path.join(taggerDir(), "thumbs"));
 const taggerUndo = new tagger.UndoStore(() => path.join(taggerDir(), "undo.json"));
+const captionManifest = new captioner.Manifest(() => path.join(taggerDir(), "joycaption_done.json"));
 let tagRun = null;
+let captionRun = null;
 let idleTimer = null;
 
 function broadcastAll(msg) {
@@ -382,6 +407,7 @@ function taggerState() {
   return {
     service: { running: taggerService.running, loaded: taggerService.loaded, status: taggerService.status },
     run: tagRun && { ...tagRun.state, errors: tagRun.state.errors.slice(-50), error_count: tagRun.state.errors.length },
+    caption_run: captionRun && { ...captionRun.state, errors: captionRun.state.errors.slice(-50), error_count: captionRun.state.errors.length },
     training: runner.runs.size > 0,
   };
 }
@@ -412,17 +438,41 @@ function armIdleUnload() {
   const min = Number(getSettings().tagger.idle_unload_min);
   if (!(min > 0)) return;
   idleTimer = setTimeout(() => {
-    if (tagRun && tagRun.state.state === "running") return armIdleUnload();
+    if (anyRunGoing()) return armIdleUnload();
     taggerService.unload().then(() => broadcastAll({ type: "tagger", data: taggerState() })).catch(() => {});
   }, min * 60000);
   idleTimer.unref();
+}
+
+function anyRunGoing() {
+  return (tagRun && tagRun.state.state === "running") || (captionRun && captionRun.state.state === "running");
+}
+
+// Caption settings for a request: saved settings, overridden by the UI's.
+function captionArgs(body) {
+  const s = getSettings();
+  const c = { ...s.tagger.caption, ...((body && body.options) || {}) };
+  const temperature = Number(c.temperature);
+  c.gen = {
+    temperature: Number.isFinite(temperature) ? temperature : 0.6,
+    top_p: Number(c.top_p) || 0.9,
+    max_new_tokens: Math.max(16, parseInt(c.max_new_tokens, 10) || 512),
+    do_sample: !(temperature <= 0),
+  };
+  c.exclude = c.exclude ?? s.tagger.exclude;
+  c.underscores = c.underscores ?? s.tagger.underscores;
+  return c;
+}
+
+function captionRefusal(c) {
+  return captioner.captionDeviceError({ device: c.device, training: runner.runs.size > 0 });
 }
 
 app.get("/api/tagger/state", h((req, res) => res.json(taggerState())));
 
 app.get("/api/tagger/models", h(async (req, res) => {
   const r = await taggerService.request("models", { models_dir: native.resolveDirs(getSettings()).models });
-  res.json({ models: r.models, categories: T.CATEGORIES });
+  res.json({ models: r.models, captioners: r.captioners || [], categories: T.CATEGORIES });
 }));
 
 // Every image of the folders with its caption.
@@ -475,8 +525,61 @@ app.post("/api/tagger/predict", h(async (req, res) => {
   res.json({ preds: out.preds, device: r.device, model: args.model });
 }));
 
+// JoyCaption for one image, not saved: the caption and the exact prompt.
+// tags = hints the UI already has (e.g. from "Auto-tag this image").
+app.post("/api/tagger/joycaption", h(async (req, res) => {
+  const { dir, name, caption_ext = ".txt", tags, caption_text, tagger_options } = req.body || {};
+  const image = imageInFolder(String(dir || ""), String(name || ""));
+  const c = captionArgs(req.body);
+  const refusal = captionRefusal(c);
+  if (refusal) return res.status(409).json({ error: refusal });
+  const cap = tagger.captionPath(image, caption_ext);
+  let hints;
+  if (Array.isArray(tags)) hints = C.cleanHints(tags, c);
+  else if (c.hint_source === "tagger") {
+    const args = taggerArgs(req.body || {});
+    const r = await taggerService.tag([image], { ...args, floor: 0.05, options: (tagger_options || {}).model_options });
+    if (r.results[0].error) return res.status(400).json({ error: r.results[0].error });
+    hints = C.hintsFromPredictions(r.results[0].preds, tagger_options || {}, { ...c, include: c.hint_include });
+  } else {
+    // the editor's (maybe unsaved) tags; prose there means a converted caption: the backup's tags
+    hints = C.cleanHints(C.parseTagText(caption_text), c);
+    if (!hints.length) hints = captioner.fileHints(cap, C.backupPath(image), c);
+  }
+  const { prompt, length } = C.buildPrompt(hints, c);
+  const r = await taggerService.caption([image], [prompt], {
+    model: c.model, quant: c.quant, models_dir: native.resolveDirs(getSettings()).models, hf_token: getSettings().hf_token, batch_size: 1, gen: c.gen,
+  });
+  armIdleUnload();
+  broadcastAll({ type: "tagger", data: taggerState() });
+  const out = r.results[0];
+  if (out.error) return res.status(400).json({ error: out.error });
+  res.json({ caption: C.cleanCaption(out.text, c), raw: out.text, prompt, tags: hints, length, device: r.device });
+}));
+
+// Bulk JoyCaption run, or a preview of `preview` random images (not saved).
+app.post("/api/tagger/caption-run", h((req, res) => {
+  if (anyRunGoing()) return res.status(409).json({ error: "An auto-tag or auto-caption run is already going" });
+  const { items = [], caption_ext = ".txt", tagger_options = {}, mode = "skip", backup = false, skip_converted = false, preview = 0 } = req.body || {};
+  if (!items.length) return res.status(400).json({ error: "No images to caption" });
+  if (!["skip", "replace"].includes(mode)) return res.status(400).json({ error: "Unknown write mode" });
+  if (String(caption_ext).toLowerCase() === C.BACKUP_EXT) return res.status(400).json({ error: `Captions cannot use ${C.BACKUP_EXT}: it is the backup extension` });
+  const c = captionArgs(req.body);
+  const refusal = captionRefusal(c);
+  if (refusal) return res.status(409).json({ error: refusal });
+  const s = getSettings();
+  const targs = c.hint_source === "tagger" ? { ...taggerArgs(req.body.tagger || {}), options: tagger_options } : null;
+  captionRun = new captioner.CaptionRun(taggerService, taggerUndo, captionManifest, {
+    items, captionExt: caption_ext, models_dir: native.resolveDirs(s).models, hf_token: s.hf_token, caption: c, tagger: targs,
+    mode, backup: !!backup, skipConverted: !!skip_converted, preview: Math.max(0, parseInt(preview, 10) || 0),
+  });
+  captionRun.on("progress", () => broadcastAll({ type: "tagger", data: taggerState() }));
+  captionRun.run().finally(armIdleUnload);
+  res.json({ ok: true, state: taggerState() });
+}));
+
 app.post("/api/tagger/run", h((req, res) => {
-  if (tagRun && tagRun.state.state === "running") return res.status(409).json({ error: "An auto-tag run is already going" });
+  if (anyRunGoing()) return res.status(409).json({ error: "An auto-tag or auto-caption run is already going" });
   const { items = [], caption_ext = ".txt", options = {}, mode = "skip" } = req.body || {};
   if (!items.length) return res.status(400).json({ error: "No images to tag" });
   if (!["skip", "append", "overwrite"].includes(mode)) return res.status(400).json({ error: "Unknown write mode" });
@@ -489,11 +592,12 @@ app.post("/api/tagger/run", h((req, res) => {
 
 app.post("/api/tagger/cancel", h((req, res) => {
   if (tagRun) tagRun.cancel();
+  if (captionRun) captionRun.cancel();
   res.json({ ok: true });
 }));
 
 app.post("/api/tagger/unload", h(async (req, res) => {
-  if (tagRun && tagRun.state.state === "running") return res.status(409).json({ error: "An auto-tag run is going" });
+  if (anyRunGoing()) return res.status(409).json({ error: "A run is going" });
   await taggerService.unload();
   res.json(taggerState());
 }));
@@ -507,8 +611,11 @@ app.post("/api/tagger/bulk", h((req, res) => {
 app.get("/api/tagger/undo", h((req, res) => res.json({ entries: taggerUndo.list() })));
 
 app.post("/api/tagger/undo", h((req, res) => {
+  if (anyRunGoing()) return res.status(409).json({ error: "Wait for the run to finish (or stop it) before undoing" });
   const r = taggerUndo.undo();
   if (!r) return res.status(400).json({ error: "Nothing to undo" });
+  if (r.extra && r.extra.joycaption) captionManifest.remove(r.extra.joycaption);
+  delete r.extra;
   res.json(r);
 }));
 
@@ -572,7 +679,7 @@ app.post("/api/system/check-python", h((req, res) => {
   const code = [
     "import importlib, json, sys",
     "out = {'python_version': sys.version.split()[0]}",
-    "for m in ['torch', 'transformers', 'safetensors', 'bitsandbytes', 'prodigyopt', 'fla', 'timm', 'pyvips']:",
+    "for m in ['torch', 'transformers', 'safetensors', 'bitsandbytes', 'prodigyopt', 'fla', 'timm', 'pyvips', 'accelerate']:",
     "    try:",
     "        mod = importlib.import_module(m); out[m] = getattr(mod, '__version__', 'ok')",
     "    except Exception as e:",

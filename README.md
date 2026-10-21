@@ -140,6 +140,35 @@ takes VRAM from training; choose GPU to share the card anyway. The tagger needs 
 matching `torchvision` and `pyvips`: on an existing install, run `./setup.sh` again (it keeps
 your PyTorch).
 
+### Natural-language captions (JoyCaption)
+
+The **Auto-Caption** tab turns booru/e621-tagged datasets into natural-language captions for
+MOSS-Image with [JoyCaption Beta One](https://huggingface.co/fancyfeast/llama-joycaption-beta-one-hf-llava)
+(8B LLaVA, ~17 GB, downloaded into the models folder on first use). Each image's tags go into its
+prompt as hints, so species, characters and details come out right:
+
+- **Prompt template** with `{tags}` and `{length}` (short / medium / long, or *mixed*: one picked per
+  image, since MOSS was trained on several lengths), and a fallback template for untagged images.
+- **Tag hints from** the image's caption file (comma- or space-separated), or from the selected
+  tagger, e.g. Hydra 3.5, run on every image first and not saved. The Never Add list, underscores →
+  spaces, excluded categories (artist and meta by default) and a 60-tag cap clean the hints.
+- **Output**: one line per caption (Anima reads only the first line), with filler openers such as
+  "This image shows" removed (editable list). Do not put a trigger in the template: the dataset
+  card's *Caption Prefix / Trigger* adds it during training.
+- **Runs**: only uncaptioned images or replace captions, optionally keeping the original tags in
+  `<image>.tags` (the trainer, the dataset scanner and the Tagger ignore that extension). *Skip
+  images JoyCaption already captioned* lets a stopped run resume. Progress shows an ETA, **Stop**
+  ends a run, and **↶ Undo** reverts it, backups included.
+- **Preview N random images** captions a sample (default 30) and shows tags, prompt and caption
+  side by side without saving, to tune the template before a run over thousands of images.
+- **📝 Caption this image** in the Images tab shows one caption and the exact prompt, not saved.
+
+JoyCaption needs a GPU: bf16 uses about 17 GB; the **4-bit NF4** load mode about 7 GB. It never
+falls back to the CPU, so while a training run is going it refuses to start unless its Device is
+set to *GPU, even while training runs*. It shares one model slot with the taggers: loading
+JoyCaption unloads a tagger and the other way round (with tagger hints, a run tags every image
+first, so the models swap once per run), and the idle unload applies to it too.
+
 ## Training, saving, resuming
 
 - Epoch or step schedules, AdamW / AdamW8bit / PagedAdamW8bit / Adafactor / Prodigy, constant /
@@ -170,10 +199,11 @@ Multi-GPU training, full finetuning, Anima's Muon optimizer, block swapping and 
 
 ```
 server.js, lib/        Node UI server (jobs, launching, logs, dataset scans, tagger)
-public/                web UI; schema.js (job schema) and tags.js (caption tags) are shared with the server
+public/                web UI; schema.js (job schema), tags.js (caption tags) and captions.js
+                       (JoyCaption prompts) are shared with the server
 trainer/venno/         Python trainer
   train.py             entry point: caching, training loop, saves, samples, resume
-  tagger/              auto-tagging service (WD v3, JTP-3, Hydra 3.5) and thumbnails
+  tagger/              auto-tagging/captioning service (WD v3, JTP-3, Hydra 3.5, JoyCaption), thumbnails
   data.py, cache.py    datasets, captions, buckets, latent/text caches
   lora.py, fp8.py      LoRA modules, fp8 base-weight storage
   models/anima/        Anima DiT + Wan VAE (Apache-2.0, from the Anima Standalone Trainer)

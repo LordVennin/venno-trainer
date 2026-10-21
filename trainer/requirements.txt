@@ -1,6 +1,7 @@
 # Venno trainer (Python side). PyTorch and torchvision are installed separately
 # by setup.sh with the CUDA build matching your driver.
-transformers>=5.5
+transformers>=5.5  # LLaVA (JoyCaption) and Qwen3.5 (MOSS)
+accelerate>=1.0  # 4-bit (bitsandbytes) loading of JoyCaption
 safetensors>=0.4
 huggingface_hub>=0.34
 einops>=0.7

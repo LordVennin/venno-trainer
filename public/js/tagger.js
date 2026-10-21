@@ -1,5 +1,6 @@
 /* Tagger view: browse dataset images, edit their captions, see tag counts,
-   bulk rename/remove/add tags and auto-tag with WD v3 or JTP-3 Hydra.
+   bulk rename/remove/add tags and auto-tag with WD v3, JTP-3 or Hydra 3.5.
+   JoyCaption (natural-language captions) lives in captioner.js.
    Uses app.js helpers (api, $, escapeHtml, showToast, showConfirm, ...). */
 "use strict";
 
@@ -16,10 +17,12 @@ const tg = {
   sel: -1, // index into filtered
   cfg: null, // settings.tagger
   models: [],
+  captioners: [],
   categories: {},
   state: null, // server tagger state
   preds: null, // {key, preds, device, model}
   predicting: false,
+  joy: null, // {key, caption, prompt, tags, ...} from "Caption this image"
   tagLimit: TG_TAG_PAGE,
   countsStale: true,
   lastRunState: null,
@@ -62,6 +65,7 @@ async function openTagger(dirs) {
     }
     tg.cfg = settings.tagger;
     bindTaggerSettings();
+    bindCaptionSettings();
   }
   fillFolderPick(dirs);
   if (job) $("tg-ext").value = job.dataset.caption_ext || ".txt";
@@ -135,6 +139,7 @@ async function loadTaggerFolders(dirs = pickedDirs(), keepSelection = false) {
   renderTaggerEditor();
   if (!$("tg-pane-tags").classList.contains("hidden")) renderTagCounts();
   renderRunScope();
+  renderCaptionScope();
 }
 
 function applyTaggerFilter(render = true) {
@@ -150,6 +155,7 @@ function applyTaggerFilter(render = true) {
     renderTaggerGrid();
     renderTaggerEditor();
     renderRunScope();
+    renderCaptionScope();
   }
 }
 
@@ -194,6 +200,7 @@ function selectTaggerImage(i) {
   const go = () => {
     tg.sel = i;
     tg.preds = null;
+    tg.joy = null;
     const page = Math.floor(i / TG_PAGE);
     if (page !== tg.page) {
       tg.page = page;
@@ -242,8 +249,10 @@ function renderTaggerEditor() {
       <span id="tg-dirty" class="chip warn hidden">unsaved</span>
       <span style="flex:1"></span>
       <button class="btn btn-sm" id="tg-predict" title="Run the tagger model on this image">✨ Auto-tag this image</button>
+      <button class="btn btn-sm" id="tg-joycaption" title="Write a natural-language caption with JoyCaption, using this image's tags as hints (not saved)">📝 Caption this image (JoyCaption)</button>
     </div>
     <div id="tg-chips" class="tg-chips"></div>
+    <div id="tg-joy"></div>
     <div id="tg-preds"></div>`;
   const ta = $("tg-caption");
   ta.addEventListener("input", () => {
@@ -266,8 +275,10 @@ function renderTaggerEditor() {
     ta.dispatchEvent(new Event("input"));
   };
   $("tg-predict").onclick = predictTaggerImage;
+  $("tg-joycaption").onclick = captionThisImage;
   renderEditorChips();
   if (tg.preds && tg.preds.key === tgKey(it)) renderPredictions();
+  if (tg.joy && tg.joy.key === tgKey(it)) renderJoyResult();
 }
 
 function renderEditorChips() {
@@ -378,7 +389,7 @@ async function predictTaggerImage() {
 }
 
 function modelLabel(id = tg.cfg.model) {
-  const m = tg.models.find((x) => x.id === id);
+  const m = tg.models.find((x) => x.id === id) || tg.captioners.find((x) => x.id === id);
   return m ? m.label : id;
 }
 
@@ -521,6 +532,7 @@ async function loadTaggerModels() {
   try {
     const r = await api("/api/tagger/models");
     tg.models = r.models;
+    tg.captioners = r.captioners || [];
     tg.categories = r.categories;
   } catch (e) {
     $("tg-service").innerHTML = `<span style="color:var(--danger)">Tagger unavailable: ${escapeHtml(e.message)}</span>`;
@@ -531,6 +543,7 @@ async function loadTaggerModels() {
     .join("");
   $("tg-model").value = tg.cfg.model;
   renderModelFields();
+  renderCaptionFields();
 }
 
 function renderModelFields() {
@@ -572,7 +585,10 @@ function bindTaggerSettings() {
     el.addEventListener(el.type === "checkbox" || el.tagName === "SELECT" ? "change" : "input", () => {
       const k = el.dataset.t;
       tg.cfg[k] = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value;
-      if (k === "model") renderModelFields();
+      if (k === "model") {
+        renderModelFields();
+        renderCaptionFields(); // hint categories follow the tagger
+      }
       saveTaggerSettings();
     });
   });
@@ -610,6 +626,7 @@ const saveTaggerSettings = debounce(async () => {
   }
   if (tg.preds) renderPredictions();
   renderRunScope();
+  renderCaptionScope();
 }, 400);
 
 function renderRunScope() {
@@ -633,11 +650,12 @@ function startTaggerRun() {
   if (!todo.length) return showToast("No images to tag");
   const go = async () => {
     try {
-      const r = await api("/api/tagger/run", {
+      await api("/api/tagger/run", {
         method: "POST",
         body: { items: todo.map(({ dir, name }) => ({ dir, name })), caption_ext: tg.ext, model: tg.cfg.model, device: tg.cfg.device, batch_size: tg.cfg.batch_size, options: tagOptions(), mode },
       });
-      onTaggerMessage(r.state);
+      // a quick run may finish (and broadcast "done") before this answer arrives
+      refreshTaggerState();
     } catch (e) {
       showToast(e.message, 6000);
     }
@@ -686,6 +704,7 @@ function onTaggerMessage(data) {
     loadTaggerModels();
   }
   if (tg.cfg) renderRunScope();
+  renderCaptionState(data);
 }
 
 function fmtDuration(s) {
@@ -699,9 +718,10 @@ function fmtDuration(s) {
 
 function switchTaggerTab(name) {
   document.querySelectorAll("#tg-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.tgtab === name));
-  for (const p of ["images", "tags", "auto"]) $("tg-pane-" + p).classList.toggle("hidden", p !== name);
+  for (const p of ["images", "tags", "auto", "caption"]) $("tg-pane-" + p).classList.toggle("hidden", p !== name);
   if (name === "tags" && tg.countsStale) renderTagCounts();
   if (name === "auto") renderRunScope();
+  if (name === "caption") renderCaptionFields();
 }
 
 // ------------------------------------------------------------------ events

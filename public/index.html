@@ -524,6 +524,7 @@
                     <button class="tab active" data-tgtab="images">Images</button>
                     <button class="tab" data-tgtab="tags">Tag Counts</button>
                     <button class="tab" data-tgtab="auto">Auto-Tag</button>
+                    <button class="tab" data-tgtab="caption">Auto-Caption</button>
                 </div>
                 <div class="tab-content tg-content">
                     <!-- images -->
@@ -639,6 +640,77 @@
                             <div class="progress-bar"><div id="tg-prog-fill"></div></div>
                             <div id="tg-prog-errors" class="hint" style="margin-top:8px;"></div>
                         </div>
+                    </div>
+                    <!-- auto-caption (JoyCaption) -->
+                    <div id="tg-pane-caption" class="tg-pane hidden">
+                        <div class="note" id="tg-cap-service"></div>
+                        <div class="note">JoyCaption Beta One writes natural-language captions (for MOSS-Image) and uses each image's tags as hints, so species and characters come out right. Captions are one line, since Anima reads only the first line. <b>Trigger words:</b> do not put them in the template; set the dataset card's <i>Caption Prefix / Trigger</i>, which the trainer adds in front of every caption.</div>
+                        <h4>Model</h4>
+                        <div class="form-row">
+                            <div class="form-group"><label>Load Mode</label><select data-c="quant">
+                                <option value="bf16">bf16 (~17 GB VRAM, best)</option>
+                                <option value="nf4">4-bit NF4 (~7 GB VRAM)</option>
+                            </select><small id="tg-cap-model-hint"></small></div>
+                            <div class="form-group"><label>Device</label><select data-c="device">
+                                <option value="auto">GPU, but not while training runs</option>
+                                <option value="cuda">GPU, even while training runs</option>
+                            </select><small>An 8B model on the CPU is far too slow, so JoyCaption never falls back to it.</small></div>
+                            <div class="form-group"><label>Batch Size</label><input type="number" data-c="batch_size" min="1" max="16"><small>Images captioned together; 2–4 is faster if VRAM allows.</small></div>
+                        </div>
+                        <h4>Prompt</h4>
+                        <div class="form-group"><label>Template <button class="btn btn-xs" data-reset="template">Default</button></label>
+                            <textarea data-c="template" rows="4"></textarea>
+                            <small><code>{tags}</code> = the image's tag hints, <code>{length}</code> = short / medium-length / long.</small></div>
+                        <div class="form-group"><label>Template for images without tags <button class="btn btn-xs" data-reset="fallback_template">Default</button></label>
+                            <textarea data-c="fallback_template" rows="2"></textarea></div>
+                        <div class="form-row">
+                            <div class="form-group"><label>Length</label><select data-c="length">
+                                <option value="mixed">Mixed (random per image)</option>
+                                <option value="short">Short</option>
+                                <option value="medium">Medium</option>
+                                <option value="long">Long</option>
+                            </select><small>MOSS-Image was trained on captions of several lengths.</small></div>
+                            <div class="form-group"><label>Tag Hints From</label><select data-c="hint_source" id="tg-cap-source">
+                                <option value="caption">The image's caption file</option>
+                                <option value="tagger">The tagger (run first, not saved)</option>
+                            </select><small id="tg-cap-source-hint"></small></div>
+                            <div class="form-group"><label>Max Hint Tags</label><input type="number" data-c="max_tags" min="0"><small>0 = no limit.</small></div>
+                        </div>
+                        <div class="form-group" id="tg-cap-cats-row"><label>Tagger Categories Used as Hints</label><div id="tg-cap-cats" class="checkbox-group"></div></div>
+                        <p class="hint">The Auto-Tag tab's <i>Never Add</i> list and <i>Underscores → spaces</i> also clean the hints. Space-separated (e621-style) tag files work too.</p>
+                        <h4>Generation</h4>
+                        <div class="form-row">
+                            <div class="form-group"><label>Temperature</label><input type="number" data-c="temperature" step="0.05" min="0" max="2"><small>0 = greedy (no sampling).</small></div>
+                            <div class="form-group"><label>Top-p</label><input type="number" data-c="top_p" step="0.05" min="0" max="1"></div>
+                            <div class="form-group"><label>Max New Tokens</label><input type="number" data-c="max_new_tokens" min="16" max="2048"></div>
+                        </div>
+                        <div class="form-group"><label>Remove These Openers <button class="btn btn-xs" data-reset="strip">Default</button></label>
+                            <textarea data-c="strip" rows="3"></textarea><small>One per line, removed from the start of every caption ("This image shows a fox" → "A fox").</small></div>
+                        <h4>Caption Many Images</h4>
+                        <div class="form-row">
+                            <div class="form-group"><label>Images</label><select id="tg-cap-scope"></select></div>
+                            <div class="form-group"><label>Existing Captions</label><select data-c="mode">
+                                <option value="skip">Caption only uncaptioned images</option>
+                                <option value="replace">Replace captions</option>
+                            </select></div>
+                        </div>
+                        <div class="checkbox-group" style="margin-bottom:12px;">
+                            <label class="hint inline"><input type="checkbox" data-c="backup"> Keep the original tags in <code>image.tags</code> (the trainer ignores it)</label>
+                            <label class="hint inline"><input type="checkbox" data-c="skip_converted"> Skip images JoyCaption already captioned (resume a stopped run)</label>
+                        </div>
+                        <div class="inline" style="margin-bottom:10px;">
+                            <button id="tg-cap-run" class="btn btn-primary">▶ Caption</button>
+                            <button id="tg-cap-preview" class="btn">Preview</button>
+                            <input type="number" data-c="preview_n" min="1" max="200" style="width:70px;" title="Images in a preview">
+                            <span class="hint">random images (not saved)</span>
+                            <button id="tg-cap-cancel" class="btn btn-danger hidden">⏹ Stop</button>
+                        </div>
+                        <div id="tg-cap-progress" class="progress-wrap hidden">
+                            <div class="progress-line"><span id="tg-cap-prog-text"></span><span id="tg-cap-prog-eta"></span></div>
+                            <div class="progress-bar"><div id="tg-cap-prog-fill"></div></div>
+                            <div id="tg-cap-prog-errors" class="hint" style="margin-top:8px;"></div>
+                        </div>
+                        <div id="tg-cap-results"></div>
                     </div>
                 </div>
             </div>
@@ -811,8 +883,10 @@
 
     <script src="js/schema.js"></script>
     <script src="js/tags.js"></script>
+    <script src="js/captions.js"></script>
     <script src="js/app.js"></script>
     <script src="js/tagger.js"></script>
+    <script src="js/captioner.js"></script>
 </body>
 
 </html>
