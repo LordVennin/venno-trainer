@@ -17,6 +17,7 @@ import signal
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 
 # fewer fragmentation OOMs with changing bucket shapes; must be set before CUDA starts
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -27,7 +28,9 @@ from PIL.PngImagePlugin import PngInfo
 from safetensors.torch import load_file, save_file
 
 from . import data as D
+from . import timesteps as TS
 from .cache import LatentCache, TextCache
+from .ema import EMAWeights
 from .fp8 import quantize_modules
 from .log import Progress, log
 from .lora import LoRANetwork
@@ -282,6 +285,31 @@ class Trainer:
             self.t.get("lr_scheduler", "constant"), self.optimizer, self.total_steps,
             intv(self.t.get("lr_warmup_steps"), 0), intv(self.t.get("lr_cycles"), 1),
         )
+        decay = num(self.t.get("ema_decay"), 0.0)
+        self.ema = EMAWeights(params, decay) if 0 < decay < 1 else None
+        if self.ema:
+            log(f"EMA of the LoRA weights, decay {decay:g}: saves and samples use the average")
+
+    def set_epoch(self, epoch):
+        """Per-epoch timestep curve and LR factor (MOSS report timesteps with a Clean-end share)."""
+        self.ts_mu, self.lr_mult = TS.T_MU, 1.0
+        if self.t.get("timestep") != "moss_report":
+            return
+        spec = self.t.get("clean_end_share") or ""
+        share, half = TS.share_for_epoch(spec, epoch + 1)
+        if share is not None:
+            self.ts_mu = TS.mu_for_clean_share(share)
+        self.lr_mult = 0.5 if half else 1.0
+        key = (share, half)
+        if getattr(self, "_share_logged", None) != key:
+            self._share_logged = key
+            what = f"{share:g}% of steps at the clean end (noise below 50%)" if share is not None else \
+                f"the report's own schedule ({100 * TS.clean_share(TS.T_MU):.0f}% of steps at the clean end)"
+            log(f"Timesteps from epoch {epoch + 1}: {what}" + (", at half the learning rate" if half else ""))
+
+    def averaged(self):
+        """The EMA weights in place for a save or samples (or nothing to swap)."""
+        return self.ema.applied() if self.ema else nullcontext()
 
     def compile_blocks(self):
         try:
@@ -346,6 +374,8 @@ class Trainer:
 
     def sample_sigmas(self, n, rng_t):
         method = self.t.get("timestep", "logit_normal")
+        if method == "moss_report":
+            return TS.sample_report_sigmas(n, rng_t, getattr(self, "ts_mu", TS.T_MU))
         if method == "logit_normal":
             t = torch.sigmoid(torch.randn(n, generator=rng_t))
         else:
@@ -373,7 +403,9 @@ class Trainer:
     def save_lora(self, path):
         dtype = {"fp16": torch.float16, "float16": torch.float16, "fp32": torch.float32, "float": torch.float32,
                  "float32": torch.float32}.get(self.t.get("save_precision"), torch.bfloat16)
-        sd = {k: v.to("cpu", dtype if v.ndim else torch.float32).contiguous() for k, v in self.adapter.export_lora(self.network.internal_state_dict()).items()}
+        with self.averaged():  # clone: the exported tensors can be views of the swapped-in weights
+            sd = {k: v.detach().to("cpu", dtype if v.ndim else torch.float32).clone().contiguous()
+                  for k, v in self.adapter.export_lora(self.network.internal_state_dict()).items()}
         meta = {
             "ss_network_dim": str(self.n.get("dim")), "ss_network_alpha": str(self.n.get("alpha")),
             "ss_base_model_version": self.adapter.cache_key, "ss_output_name": self.name,
@@ -394,7 +426,8 @@ class Trainer:
         os.makedirs(tmp)
         save_file({k: v.cpu().contiguous() for k, v in self.network.internal_state_dict().items()}, os.path.join(tmp, "lora.safetensors"))
         torch.save({"optimizer": self.optimizer.state_dict(), "scheduler": self.scheduler.state_dict(),
-                    "rng": rng.getstate(), "rng_t": rng_t.get_state()}, os.path.join(tmp, "state.pt"))
+                    "rng": rng.getstate(), "rng_t": rng_t.get_state(),
+                    "ema": self.ema.state_dict() if self.ema else None}, os.path.join(tmp, "state.pt"))
         with open(os.path.join(tmp, "train_state.json"), "w") as f:
             json.dump({"step": step, "epoch": epoch, "total_steps": self.total_steps, "time": time.time()}, f)
         shutil.rmtree(d, ignore_errors=True)
@@ -433,6 +466,11 @@ class Trainer:
             group["initial_lr"] = lr
         rng.setstate(st["rng"])
         rng_t.set_state(st["rng_t"])
+        if self.ema:
+            if st.get("ema"):
+                self.ema.load_state_dict(st["ema"])
+            else:  # saved without EMA: the average starts from the resumed weights
+                self.ema.shadow = [p.detach().clone().float() for p in self.ema.params]
         with open(os.path.join(d, "train_state.json")) as f:
             info = json.load(f)
         log(f"Resumed from {d} at step {info['step']} (epoch {info['epoch']})")
@@ -454,6 +492,10 @@ class Trainer:
         if not prompts:
             return
         log(f"Generating {len(prompts)} sample(s)...")
+        with self.averaged():
+            self._generate(prompts, tag)
+
+    def _generate(self, prompts, tag):
         self.adapter.load_vae()
         neg_text = (self.s.get("negative") or "").strip()
         uncond = self.texts.load(neg_text)
@@ -500,6 +542,7 @@ class Trainer:
         sample_every = max(1, intv(self.s.get("every_epochs" if by_epochs else "every_steps"), 1))
         max_norm = num(self.t.get("max_grad_norm"), 1.0)
 
+        self.set_epoch(start_epoch)
         if step == 0 and self.s.get("sample_first"):
             self.generate_samples("000000")
 
@@ -513,6 +556,7 @@ class Trainer:
         epoch = start_epoch
         params = self.network.trainable_parameters()
         while step < self.total_steps and not _stop_requested:
+            self.set_epoch(epoch)
             batches = D.epoch_batches(self.items, self.batch_sizes, len(self.resolutions), rng)
             # resumed mid-epoch: skip the batches this epoch already used
             skip = (step - epoch * self.steps_per_epoch) * self.accum if step > epoch * self.steps_per_epoch else 0
@@ -528,7 +572,17 @@ class Trainer:
                     raise RuntimeError(f"Loss became {total_loss} at step {step + 1}; lower the learning rate.")
                 if max_norm > 0:
                     torch.nn.utils.clip_grad_norm_(params, max_norm)
-                self.optimizer.step()
+                if self.lr_mult != 1.0:  # a Clean-end share refresh epoch
+                    lrs = [g["lr"] for g in self.optimizer.param_groups]
+                    for g in self.optimizer.param_groups:
+                        g["lr"] *= self.lr_mult
+                    self.optimizer.step()
+                    for g, lr in zip(self.optimizer.param_groups, lrs):
+                        g["lr"] = lr
+                else:
+                    self.optimizer.step()
+                if self.ema:
+                    self.ema.update()
                 self.scheduler.step()
                 self.optimizer.zero_grad(set_to_none=True)
                 step += 1

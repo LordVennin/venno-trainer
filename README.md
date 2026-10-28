@@ -7,8 +7,8 @@ per-folder dataset cards). It trains:
 
 | Model | Variants | What is trained |
 |---|---|---|
-| **Anima** | the model you point it at (base, aesthetic, preview…) | LoRA on the DiT blocks |
-| **MOSS-Image** | SFT, Base | LoRA on the 42 DiT blocks (block 22 skipped by default) |
+| **Anima** | the model you point it at (base, aesthetic, preview…) | LoRA on the DiT blocks' attention and MLP layers |
+| **MOSS-Image** | SFT, Base | LoRA on all 42 DiT blocks |
 
 Training runs in the bundled Python trainer (`trainer/venno`): **one Python environment** for
 both models. You do not need the Anima trainer, ai-toolkit or their environments.
@@ -173,8 +173,23 @@ first, so the models swap once per run), and the idle unload applies to it too.
 
 - Epoch or step schedules, AdamW / AdamW8bit / PagedAdamW8bit / Adafactor / Prodigy, constant /
   warmup / cosine / cosine-with-restarts / linear / polynomial schedules, gradient accumulation,
-  logit-normal or uniform timesteps with a flow shift (defaults: Anima logit-normal, shift 3, as in
-  the Anima trainer; MOSS uniform, shift 5, as ai-toolkit's MOSS preset).
+  logit-normal or uniform timesteps with a flow shift (Anima's default: logit-normal, shift 3, as in
+  the Anima trainer).
+- **MOSS-Image timesteps** come from its technical report (the final pretraining stage), moved by
+  a **Clean-end share**: the share of steps at the clean end (noise below 50%), where detail and
+  identity are learned. The default is Fizgig's "Slide", `60:7:30:8:3`: 60% until epoch 7, 30% at
+  epoch 8, then 60% with every 3rd epoch at 30% and half the learning rate. The report's own curve
+  puts about 11% there, AI-Toolkit's shift-5 uniform timesteps about 17%. The share is counted in
+  epochs, and Slide was tuned on small datasets trained for ~70 epochs: a run of a few epochs over a
+  big dataset stays at its first share, so set a single share (e.g. `40`) or a schedule that fits your
+  epoch count. Ported from [Fizgig](https://github.com/shootthesound/Fizgig) (Apache-2.0).
+- **What the LoRA trains**: all 42 MOSS-Image blocks (the sampler skips block 22 only on the CFG
+  negative branch; AI-Toolkit and Fizgig train it too; jobs from earlier Venno versions that left it
+  out get a warning), and Anima's attention and MLP layers, leaving out the adaLN modulation layers
+  (a third of the LoRA, prone to colour and contrast shifts) unless you clear *Skip Layers*.
+- **EMA** (decay 0.98 by default): checkpoints and samples are made from a running average of the
+  LoRA weights while training runs on the raw ones, for smoother, less distorted epochs. It costs
+  VRAM equal to the LoRA's weights in fp32, and resumes with the run.
 - LoRAs are saved in the key layout ComfyUI expects: `lora_unet_blocks_N_…` for Anima (as the
   Anima trainer writes them) and `diffusion_model.layers.N.proj.q/k/v/o…` for MOSS (as ai-toolkit
   writes them).

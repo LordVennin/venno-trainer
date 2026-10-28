@@ -117,7 +117,7 @@ class AnimaTests(unittest.TestCase):
         final = load_file(os.path.join(out, "anima_test.safetensors"))
         keys = sorted(final)
         self.assertIn("lora_unet_blocks_0_self_attn_q_proj.lora_down.weight", keys)
-        self.assertIn("lora_unet_blocks_0_adaln_modulation_mlp_1.alpha", keys)
+        self.assertFalse(any("adaln_modulation" in k for k in keys), "attention and MLP only by default")
         self.assertIn("lora_unet_blocks_0_mlp_layer2.lora_up.weight", keys)
         self.assertTrue(all(k.startswith("lora_unet_blocks_") for k in keys))
         self.assertEqual(final["lora_unet_blocks_0_self_attn_q_proj.lora_down.weight"].shape[0], 16)
@@ -131,6 +131,10 @@ class AnimaTests(unittest.TestCase):
         self.assertGreaterEqual(n_text, 1 + 3 + 2 * 2 + 1)
         with safe_open(next(os.path.join(r, f) for r, _, fs in os.walk(os.path.join(cache, "anima", "latents")) for f in fs), "pt") as fh:
             self.assertEqual(fh.get_tensor("latent").shape[0], 16)
+
+        # EMA (on by default): the state carries the average of the 4 steps
+        st = torch.load(os.path.join(out, "anima_test-final-state", "state.pt"), weights_only=False)
+        self.assertEqual(st["ema"]["n"], 4)
 
         # resume continues from the final state up to the new step count
         job2 = self.job(duration_unit="steps", max_steps=6, save_every_steps=100)
@@ -149,18 +153,40 @@ class AnimaTests(unittest.TestCase):
         self.assertFalse(torch.equal(resumed["lora_unet_blocks_0_self_attn_q_proj.lora_up.weight"],
                                      final["lora_unet_blocks_0_self_attn_q_proj.lora_up.weight"]))
 
+    def test_ema_saves_the_average(self):
+        out = os.path.join(self.tmp, "out_ema")
+        job = self.job(duration_unit="steps", max_steps=5, save_every_steps=100, ema_decay=0.9)
+        job["sampling"]["enabled"] = False
+        trainer = T.Trainer(run_config(job, self.paths, out, os.path.join(self.tmp, "cache")))
+        T._stop_requested = False
+        trainer.train()
+        saved = load_file(os.path.join(out, "anima_test.safetensors"))
+        snap = lambda: {k: v.detach().clone() for k, v in trainer.adapter.export_lora(trainer.network.internal_state_dict()).items()}
+        raw = snap()
+        with trainer.ema.applied():
+            avg = snap()
+        k = "lora_unet_blocks_0_self_attn_q_proj.lora_up.weight"
+        self.assertTrue(torch.allclose(saved[k].float(), avg[k].float().cpu(), atol=1e-2))
+        self.assertFalse(torch.allclose(avg[k].float(), raw[k].float(), atol=1e-6), "the average differs from the last step")
+        self.assertTrue(torch.equal(snap()[k], raw[k]), "training weights are restored after a save")
+        # a float32 save on the CPU (no copy from the GPU) still writes the average
+        job["training"]["save_precision"] = "fp32"
+        trainer.t["save_precision"] = "fp32"
+        trainer.save_lora(os.path.join(out, "fp32.safetensors"))
+        self.assertTrue(torch.allclose(load_file(os.path.join(out, "fp32.safetensors"))[k], avg[k].float()))
+
     def test_live_text_epochs_and_init_weights(self):
         out = os.path.join(self.tmp, "out2")
         job = self.job(duration_unit="epochs", max_epochs=2, save_every_epochs=1, cache_te=False)
         job["sampling"]["enabled"] = False
-        job["network"].update(dim=4, alpha=2, ignore_layers="adaln_modulation")
+        job["network"].update(dim=4, alpha=2, ignore_layers="")
         train(run_config(job, self.paths, out, os.path.join(self.tmp, "cache2")))
         sd = load_file(os.path.join(out, "anima_test.safetensors"))
-        self.assertFalse(any("adaln_modulation" in k for k in sd))
+        self.assertIn("lora_unet_blocks_0_adaln_modulation_mlp_1.alpha", sd, "a cleared field trains adaLN too")
         self.assertTrue(os.path.exists(os.path.join(out, "anima_test-000001.safetensors")))
 
         job["network"]["init_weights"] = os.path.join(out, "anima_test.safetensors")
-        job["training"].update(max_epochs=1, lr="0")
+        job["training"].update(max_epochs=1, lr="0", ema_decay=0)
         job["training"]["output_name"] = "anima_init"
         train(run_config(job, self.paths, out, os.path.join(self.tmp, "cache2")))
         again = load_file(os.path.join(out, "anima_init.safetensors"))
@@ -214,6 +240,47 @@ class MossTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_report_timesteps_and_clean_share_schedule(self):
+        out = os.path.join(self.tmp, "out_ts")
+        job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}],
+                         duration_unit="epochs", max_epochs=4, save_every_epochs=10, optimizer="AdamW", lr="1e-3",
+                         output_name="moss_ts", workers=1, clean_end_share="60:1:30:2:2")
+        job["dataset"].update(resolutions="64", batch_sizes="1", min_bucket=32, max_bucket=128, bucket_steps=16)
+        job["network"].update(dim=4, alpha=4)
+        job["sampling"]["enabled"] = False
+        self.assertEqual(job["training"]["timestep"], "moss_report")
+        self.assertEqual(job["network"]["ignore_layers"], "", "all 42 blocks by default")
+        lines, lrs = [], []
+        orig_log, orig_step = T.log, torch.optim.AdamW.step
+        T.log = lambda *a: (lines.append(" ".join(map(str, a))), orig_log(*a))
+
+        def step(opt, *a, **k):
+            lrs.append(opt.param_groups[0]["lr"])
+            return orig_step(opt, *a, **k)
+
+        torch.optim.AdamW.step = step
+        try:
+            trainer = T.Trainer(run_config(job, self.paths, out, os.path.join(self.tmp, "cache")))
+            T._stop_requested = False
+            trainer.train()
+        finally:
+            T.log, torch.optim.AdamW.step = orig_log, orig_step
+        shares = [l for l in lines if l.startswith("Timesteps from epoch")]
+        self.assertEqual(shares, [
+            "Timesteps from epoch 1: 60% of steps at the clean end (noise below 50%)",
+            "Timesteps from epoch 2: 30% of steps at the clean end (noise below 50%)",
+            "Timesteps from epoch 3: 60% of steps at the clean end (noise below 50%)",
+            "Timesteps from epoch 4: 30% of steps at the clean end (noise below 50%), at half the learning rate",
+        ])
+        per_epoch = len(lrs) // 4
+        self.assertEqual(set(lrs[:3 * per_epoch]), {1e-3})
+        self.assertEqual(set(lrs[3 * per_epoch:]), {5e-4}, "the refresh epoch trains at half the LR")
+        self.assertEqual(trainer.optimizer.param_groups[0]["lr"], 1e-3, "the scheduler's LR is restored")
+        g = torch.Generator().manual_seed(0)
+        trainer.set_epoch(1)
+        s = trainer.sample_sigmas(20000, g)
+        self.assertAlmostEqual(float((s < 0.5).float().mean()), 0.30, delta=0.02)
 
     def test_train_keys_and_lora_roundtrip(self):
         out = os.path.join(self.tmp, "out")

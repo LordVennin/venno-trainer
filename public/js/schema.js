@@ -44,7 +44,7 @@
   const OPTIONS = {
     optimizer: ["AdamW8bit", "AdamW", "Adafactor", "Prodigy", "PagedAdamW8bit"],
     lr_scheduler: ["constant", "constant_with_warmup", "cosine", "cosine_with_restarts", "linear", "polynomial"],
-    timestep: [["logit_normal", "Logit normal"], ["uniform", "Uniform"]],
+    timestep: [["logit_normal", "Logit normal"], ["uniform", "Uniform"], ["moss_report", "MOSS-Image pretraining (technical report)"]],
     mixed_precision: [["bf16", "BFloat16"], ["fp32", "Float32 (slow, testing)"]],
     save_precision: [["bf16", "BFloat16"], ["fp16", "Float16"], ["fp32", "Float32"]],
   };
@@ -104,6 +104,8 @@
         workers: 4,
         timestep: "logit_normal",
         flow_shift: 3.0,
+        clean_end_share: "", // MOSS report timesteps only; see trainer/venno/timesteps.py
+        ema_decay: 0, // 0 = off
         loss_type: "mse",
         gpu_ids: "0",
       },
@@ -151,8 +153,11 @@
       training: {
         lr: "1e-4", optimizer: "AdamW8bit", lr_scheduler: "cosine",
         timestep: "logit_normal", flow_shift: 3.0, output_name: "my_anima_lora",
+        ema_decay: 0.98,
       },
-      network: { dim: 16, alpha: 16 },
+      // attention and MLP only: LoRAs on the adaLN modulation layers (a third of
+      // the LoRA) tend to shift colour and contrast; Fizgig trains Anima this way
+      network: { dim: 16, alpha: 16, ignore_layers: "adaln_modulation" },
       dataset: { resolutions: "1024", batch_sizes: "2", max_bucket: 1536 },
       // the Anima trainer previews with a linear (unshifted) Euler schedule
       sampling: { width: 832, height: 1216, steps: 28, cfg: 4.0, shift: 1.0 },
@@ -162,13 +167,16 @@
       training: {
         lr: "1e-4", optimizer: "AdamW8bit", lr_scheduler: "constant",
         duration_unit: "steps", max_steps: 3000, save_every_steps: 250, keep_last_n: 4,
-        // uniform sigmas shifted by 5 = ai-toolkit's "shift" timesteps for MOSS
-        timestep: "uniform", flow_shift: 5.0, output_name: "my_moss_lora",
-        weight_decay: 0.0001, cache_te: true,
+        // the technical report's final pretraining timesteps, moved by Fizgig's
+        // default Clean-end share ("Slide"): 60% of steps at the clean end
+        // until epoch 7, 30% at epoch 8, then 60% with every 3rd epoch at 30%
+        // and half the learning rate
+        timestep: "moss_report", clean_end_share: "60:7:30:8:3", flow_shift: 5.0, output_name: "my_moss_lora",
+        weight_decay: 0.0001, cache_te: true, ema_decay: 0.98,
       },
-      // The vendor sampler skips DiT block 22 on the CFG negative branch, so
-      // the LoRA stays off that block (ai-toolkit's MOSS default).
-      network: { dim: 32, alpha: 32, ignore_layers: "layers.22." },
+      // all 42 blocks: block 22 is only skipped by the sampler's skip-layer
+      // guidance on the negative branch, and AI-Toolkit trains it too
+      network: { dim: 32, alpha: 32, ignore_layers: "" },
       dataset: { resolutions: "512, 768, 1024", batch_sizes: "1" },
       sampling: { width: 1024, height: 1024, steps: 30, cfg: 3.0, shift: 5.0, every_steps: 250 },
     },
@@ -243,6 +251,28 @@
     if (!String(job.training.output_name || "").trim()) {
       issues.push({ level: "error", msg: "Set an output name." });
     }
+    const t = job.training;
+    const ignore = String(job.network.ignore_layers || "");
+    if (job.model === "moss_image" && /(^|[\s,])layers\.22\.?($|[\s,])/.test(ignore)) {
+      issues.push({
+        level: "warn",
+        msg: "Block 22 is left out of the LoRA (Skip Layers: layers.22.). Earlier Venno versions did this by mistake: the sampler only skips block 22 on the CFG negative branch, and AI-Toolkit and Fizgig train it. Clear the field to train all 42 blocks.",
+      });
+    }
+    if (t.timestep === "moss_report" && job.model !== "moss_image") {
+      issues.push({ level: "error", msg: "The MOSS-Image pretraining timesteps are for MOSS-Image jobs only." });
+    }
+    if (t.timestep === "moss_report" && !cleanShareValid(t.clean_end_share)) {
+      issues.push({ level: "error", msg: `Clean-end share "${t.clean_end_share}" is not valid: give a share (40), share:epochs:share (75:5:40) or share:epoch:share:epoch[:every] (60:7:30:8:3).` });
+    }
+    if (job.model === "moss_image" && t.timestep === "uniform" && Number(t.flow_shift) === 5) {
+      issues.push({
+        level: "warn",
+        msg: "This job uses AI-Toolkit's shift-5 uniform timesteps (about 17% of steps at the clean end). MOSS-Image's own pretraining timesteps with a Clean-end share are now the default (Training → Timesteps).",
+      });
+    }
+    const ema = Number(t.ema_decay);
+    if (ema && !(ema > 0 && ema < 1)) issues.push({ level: "error", msg: "EMA decay must be between 0 and 1 (0 = off)." });
     const tagOps = folders.some((f) => Number(f.tag_dropout) > 0 || f.shuffle);
     if (tagOps && textCached(job) && Number(job.training.te_variants) < 2) {
       issues.push({
@@ -251,6 +281,16 @@
       });
     }
     return issues;
+  }
+
+  // Clean-end share: "", a share, A:N:B, A:H:B:E or A:H:B:E:R (trainer/venno/timesteps.py)
+  function cleanShareValid(spec) {
+    const s = String(spec ?? "").replace(/%/g, "").trim();
+    if (!s) return true;
+    const p = s.split(":").map(Number);
+    if (![1, 3, 4, 5].includes(p.length) || p.some((x) => !Number.isFinite(x))) return false;
+    if (p.filter((_, i) => i % 2 === 0).some((x) => !(x > 0 && x <= 100))) return false;
+    return !(p.length >= 4 && p[3] < p[1]);
   }
 
   // MOSS-Image's 9B text encoder cannot stay loaded next to the DiT, so its
@@ -269,6 +309,7 @@
     deepMerge,
     variantOf,
     textCached,
+    cleanShareValid,
     parseIntList,
     repeatsFromFolderName,
     validateJob,

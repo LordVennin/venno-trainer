@@ -130,6 +130,11 @@
                                 <label>Seed</label>
                                 <input type="number" data-bind="training.seed">
                             </div>
+                            <div class="form-group">
+                                <label>EMA Decay</label>
+                                <input type="number" data-bind="training.ema_decay" step="0.005" min="0" max="0.999">
+                                <small>Checkpoints and samples use a running average of the LoRA weights (training uses the raw ones): smoother, less distorted epochs. 0.98 is Fizgig's measured default; 0 = off. Costs VRAM equal to the LoRA's weights in fp32.</small>
+                            </div>
                         </div>
 
                         <h4>Training Schedule</h4>
@@ -261,10 +266,15 @@
                                 <label>Timestep Sampling</label>
                                 <select data-bind="training.timestep" data-options="timestep"></select>
                             </div>
-                            <div class="form-group">
+                            <div class="form-group" data-show="training.timestep!=moss_report">
                                 <label>Flow Shift</label>
                                 <input type="number" data-bind="training.flow_shift" step="0.1" min="0">
-                                <small>Shifts training toward noisier timesteps. Anima default 3, MOSS 5.</small>
+                                <small>Shifts training toward noisier timesteps. Anima default 3.</small>
+                            </div>
+                            <div class="form-group" data-show="training.timestep=moss_report">
+                                <label>Clean-end Share</label>
+                                <input type="text" data-bind="training.clean_end_share" placeholder="blank = the report's own (~11%)">
+                                <small>Share of steps at the clean end (noise below 50%), where detail and identity are learned, counted per epoch: <code>40</code>; <code>75:5:40</code> (75% for epochs 1–5, then 40%); <code>60:7:30:8:3</code> (Fizgig's "Slide" default: 60% until epoch 7, 30% at epoch 8, then 60% with every 3rd epoch at 30% and half the LR). Fizgig tuned Slide on small datasets trained for ~70 epochs; a run of a few epochs over a big dataset stays at its first share.</small>
                             </div>
                             <div class="form-group">
                                 <label>Loss Type</label>
@@ -356,8 +366,8 @@
                         <div class="form-group">
                             <label>Skip Layers Containing</label>
                             <input type="text" data-bind="network.ignore_layers" placeholder="e.g. blocks.27. or adaln_modulation">
-                            <small data-model="anima">Comma/space separated parts of layer names (blocks.N.self_attn.q_proj, blocks.N.mlp.layer1, …) to leave without LoRA.</small>
-                            <small data-model="moss_image">MOSS samples with block 22 skipped on the CFG negative branch, so the default keeps the LoRA off layers.22.</small>
+                            <small data-model="anima">Comma/space separated parts of layer names (blocks.N.self_attn.q_proj, blocks.N.mlp.layer1, …) to leave without LoRA. The default leaves out the adaLN modulation layers (a third of the LoRA, prone to colour and contrast shifts); clear it to train them too.</small>
+                            <small data-model="moss_image">Comma/space separated parts of layer names (layers.N.proj.qkv, layers.N.proj.ffn_down, …) to leave without LoRA. Blank = all 42 blocks, as AI-Toolkit and Fizgig train MOSS-Image.</small>
                         </div>
                         <div class="form-group">
                             <label>Initialize From LoRA</label>
