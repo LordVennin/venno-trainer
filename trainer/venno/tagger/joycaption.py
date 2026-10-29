@@ -32,6 +32,34 @@ NEEDED = ["config.json", "tokenizer.json", "tokenizer_config.json", "preprocesso
 SKIP_QUANT = ["vision_tower", "multi_modal_projector", "lm_head"]
 
 
+def has_accelerate():
+    import importlib.util
+
+    return importlib.util.find_spec("accelerate") is not None
+
+
+def load_kwargs(device, quant, accelerate=None):
+    """from_pretrained arguments. A device_map (straight onto the GPU) needs
+    the accelerate package; bf16 without it loads into RAM and moves to the
+    device after. 4-bit needs it."""
+    accelerate = has_accelerate() if accelerate is None else accelerate
+    kwargs = {"dtype": torch.bfloat16}
+    if quant == "nf4":
+        if not accelerate:
+            raise RuntimeError("The 4-bit NF4 load mode needs the accelerate package: run ./setup.sh again "
+                               "(or venv/bin/pip install accelerate), or use bf16.")
+        from transformers import BitsAndBytesConfig
+
+        kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16,
+            llm_int8_skip_modules=SKIP_QUANT,
+        )
+        kwargs["device_map"] = {"": str(device)}
+    elif device.type == "cuda" and accelerate:
+        kwargs["device_map"] = {"": str(device)}
+    return kwargs
+
+
 def model_dir(models_dir, model_id):
     return os.path.join(models_dir, CAPTIONERS[model_id]["repo"].replace("/", "__"))
 
@@ -89,17 +117,7 @@ class JoyCaptioner:
         if tok.pad_token is None:
             vocab = tok.get_vocab()
             tok.pad_token = "<|finetune_right_pad_id|>" if "<|finetune_right_pad_id|>" in vocab else tok.eos_token
-        kwargs = {"dtype": torch.bfloat16}
-        if quant == "nf4":
-            from transformers import BitsAndBytesConfig
-
-            kwargs["quantization_config"] = BitsAndBytesConfig(
-                load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16,
-                llm_int8_skip_modules=SKIP_QUANT,
-            )
-            kwargs["device_map"] = {"": str(self.device)}
-        elif self.device.type == "cuda":
-            kwargs["device_map"] = {"": str(self.device)}
+        kwargs = load_kwargs(self.device, quant)
         model = LlavaForConditionalGeneration.from_pretrained(root, **kwargs)
         if "device_map" not in kwargs:
             model = model.to(self.device)

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 
+import torch
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -60,6 +61,16 @@ class JoyCaptionTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_load_kwargs_without_accelerate(self):
+        from venno.tagger import joycaption as J
+
+        cuda = torch.device("cuda")
+        self.assertEqual(J.load_kwargs(cuda, "bf16", accelerate=True)["device_map"], {"": "cuda"})
+        self.assertNotIn("device_map", J.load_kwargs(cuda, "bf16", accelerate=False), "bf16 loads, then moves to the GPU")
+        self.assertNotIn("device_map", J.load_kwargs(torch.device("cpu"), "bf16", accelerate=True))
+        with self.assertRaisesRegex(RuntimeError, "needs the accelerate package"):
+            J.load_kwargs(cuda, "nf4", accelerate=False)
 
     def test_generation(self):
         from venno.tagger import joycaption as J
