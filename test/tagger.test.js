@@ -50,6 +50,20 @@ test("merge modes and bulk operations", () => {
   assert.strictEqual(T.applyOp("fox, tail", { type: "add", tag: "Tail" }), null);
 });
 
+test("a caption line after the tags is kept by every tag operation", () => {
+  const cap = "fox, red fur\nA red fox sits in tall grass, looking at the camera.";
+  assert.deepStrictEqual(T.splitCaption(cap), { tags: "fox, red fur", prose: "A red fox sits in tall grass, looking at the camera." });
+  assert.deepStrictEqual(T.captionTags(cap), ["fox", "red fur"]);
+  assert.deepStrictEqual(T.captionTags("fox\nred fur\ntail"), ["fox", "red fur", "tail"], "one tag per line is still all tags");
+  assert.strictEqual(T.applyOp(cap, { type: "remove", tag: "red_fur" }), "fox\nA red fox sits in tall grass, looking at the camera.");
+  assert.strictEqual(T.applyOp(cap, { type: "add", tag: "sks", position: "start" }), "sks, fox, red fur\nA red fox sits in tall grass, looking at the camera.");
+  assert.strictEqual(T.applyOp(cap, { type: "remove", tag: "looking at the camera" }), null, "prose is not a tag");
+  assert.strictEqual(T.mergeCaption(cap, ["tail"], "append"), "fox, red fur, tail\nA red fox sits in tall grass, looking at the camera.");
+  assert.strictEqual(T.mergeCaption(cap, ["wolf"], "overwrite"), "wolf\nA red fox sits in tall grass, looking at the camera.");
+  assert.deepStrictEqual(T.countTags([cap]).map((c) => c.tag), ["fox", "red fur"]);
+  assert.ok(!T.matchesFilter({ name: "a.png", caption: cap }, "*camera*"));
+});
+
 test("filter expressions", () => {
   const it = { name: "img_01.png", caption: "fox, red fur, solo" };
   assert.ok(T.matchesFilter(it, "fox, red_fur"));

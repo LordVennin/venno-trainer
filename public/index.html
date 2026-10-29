@@ -703,6 +703,10 @@
                                 <option value="skip">Caption only uncaptioned images</option>
                                 <option value="replace">Replace captions</option>
                             </select></div>
+                            <div class="form-group"><label>Write</label><select data-c="layout">
+                                <option value="tags_caption">Tags + caption (tags on line 1, caption on line 2)</option>
+                                <option value="caption">The caption only</option>
+                            </select><small>Tags + caption keeps the original tags as written (from the .tags backup if an earlier run replaced them). Anima trains on line 1 and MOSS-Image on both lines, unless the dataset card sets a per-step Caption Mix. Tag shuffle and dropout only touch line 1.</small></div>
                         </div>
                         <div class="checkbox-group" style="margin-bottom:12px;">
                             <label class="hint inline"><input type="checkbox" data-c="backup"> Keep the original tags in <code>image.tags</code> (the trainer ignores it)</label>

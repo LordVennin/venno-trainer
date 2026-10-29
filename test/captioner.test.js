@@ -138,6 +138,40 @@ test("replace with backups, resume skips converted images, undo restores everyth
   assert.ok(!manifest.has(path.join(dir, "a.txt")) && !manifest.has(path.join(dir, "c.txt")));
 });
 
+test("tags + caption layout: the original tags on line 1, the caption on line 2", async () => {
+  const dir = tmpDataset({ "a.png": "red_fox, solo", "b.png": "A wolf in the snow, howling at the moon.", "c.png": null });
+  fs.writeFileSync(path.join(dir, "b.tags"), "grey_wolf, snow"); // converted earlier, tags kept
+  const { undo, manifest } = stores(dir);
+  const items = tagger.listFolder(dir, ".txt");
+  const opts = { items, captionExt: ".txt", caption: OPTS, mode: "replace", layout: "tags_caption" };
+  const st = await new captioner.CaptionRun(fakeService(), undo, manifest, opts).run();
+  assert.strictEqual(st.written, 3);
+  const lines = (f) => read(dir, f).split("\n");
+  const a = lines("a.txt");
+  assert.strictEqual(a.length, 2);
+  assert.strictEqual(a[0], "red_fox, solo", "tags as written");
+  assert.ok(a[1].startsWith("A fox.") && a[1].includes("accurate: red fox, solo."));
+  assert.strictEqual(lines("b.txt")[0], "grey_wolf, snow", "a converted caption gets its tags back from the backup");
+  assert.strictEqual(lines("c.txt").length, 1, "no tags on file: the caption alone");
+  // a second run takes its hints and tags from line 1 only
+  await new captioner.CaptionRun(fakeService(), undo, manifest, { ...opts, items: items.slice(0, 1) }).run();
+  const again = lines("a.txt");
+  assert.strictEqual(again.length, 2);
+  assert.strictEqual(again[0], "red_fox, solo");
+  assert.ok(again[1].includes("accurate: red fox, solo.") && !again[1].includes("accurate: red fox, solo, A fox"));
+  // the preview shows the file text; the tagger's hints stand in when the file has no tags
+  const pv = await new captioner.CaptionRun(fakeService(), undo, manifest, {
+    ...opts, items: items.slice(2), caption: { ...OPTS, hint_source: "tagger" }, tagger: { model: "wd", options: {} }, preview: 5,
+  }).run();
+  const [tagLine, capLine] = pv.results[0].text.split("\n");
+  assert.ok(pv.results[0].tags.length && tagLine === pv.results[0].tags.join(", "), pv.results[0].text);
+  assert.strictEqual(capLine, pv.results[0].caption);
+  assert.strictEqual(read(dir, "c.txt").split("\n").length, 1, "a preview writes nothing");
+  for (let i = 0; i < 2; i++) undo.undo();
+  assert.deepStrictEqual(["a", "b"].map((n) => read(dir, n + ".txt")), ["red_fox, solo", "A wolf in the snow, howling at the moon."]);
+  assert.strictEqual(read(dir, "c.txt"), null);
+});
+
 test("tagger hints: every image is tagged before captioning starts (one model swap)", async () => {
   const dir = tmpDataset({ "a.png": null, "b.png": null, "c.png": null, "d.png": null, "e.png": null });
   const { undo, manifest } = stores(dir);

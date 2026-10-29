@@ -88,6 +88,7 @@ function defaultSettings() {
         max_new_tokens: 512,
         strip: C.DEFAULT_STRIP.join("\n"),
         mode: "skip", // skip = only uncaptioned images | replace
+        layout: "tags_caption", // tags_caption = original tags on line 1, caption on line 2 | caption = the caption alone
         backup: true, // keep the original tags in <image>.tags
         skip_converted: true,
         preview_n: 30,
@@ -560,9 +561,10 @@ app.post("/api/tagger/joycaption", h(async (req, res) => {
 // Bulk JoyCaption run, or a preview of `preview` random images (not saved).
 app.post("/api/tagger/caption-run", h((req, res) => {
   if (anyRunGoing()) return res.status(409).json({ error: "An auto-tag or auto-caption run is already going" });
-  const { items = [], caption_ext = ".txt", tagger_options = {}, mode = "skip", backup = false, skip_converted = false, preview = 0 } = req.body || {};
+  const { items = [], caption_ext = ".txt", tagger_options = {}, mode = "skip", layout = "caption", backup = false, skip_converted = false, preview = 0 } = req.body || {};
   if (!items.length) return res.status(400).json({ error: "No images to caption" });
   if (!["skip", "replace"].includes(mode)) return res.status(400).json({ error: "Unknown write mode" });
+  if (!["caption", "tags_caption"].includes(layout)) return res.status(400).json({ error: "Unknown caption layout" });
   if (String(caption_ext).toLowerCase() === C.BACKUP_EXT) return res.status(400).json({ error: `Captions cannot use ${C.BACKUP_EXT}: it is the backup extension` });
   const c = captionArgs(req.body);
   const refusal = captionRefusal(c);
@@ -571,7 +573,7 @@ app.post("/api/tagger/caption-run", h((req, res) => {
   const targs = c.hint_source === "tagger" ? { ...taggerArgs(req.body.tagger || {}), options: tagger_options } : null;
   captionRun = new captioner.CaptionRun(taggerService, taggerUndo, captionManifest, {
     items, captionExt: caption_ext, models_dir: native.resolveDirs(s).models, hf_token: s.hf_token, caption: c, tagger: targs,
-    mode, backup: !!backup, skipConverted: !!skip_converted, preview: Math.max(0, parseInt(preview, 10) || 0),
+    mode, layout, backup: !!backup, skipConverted: !!skip_converted, preview: Math.max(0, parseInt(preview, 10) || 0),
   });
   captionRun.on("progress", () => broadcastAll({ type: "tagger", data: taggerState() }));
   captionRun.run().finally(armIdleUnload);

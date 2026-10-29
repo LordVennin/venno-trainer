@@ -133,12 +133,12 @@ function renderJoyResult() {
       <details><summary class="hint">Prompt used (${j.tags.length} tag hints)</summary><pre class="tg-joy-prompt">${escapeHtml(j.prompt)}</pre></details>
       <div class="inline" style="margin-top:6px;">
         <button class="btn btn-sm btn-primary" id="tg-joy-use">Use as caption</button>
-        <span class="hint">Replaces the text above; then Save. Your trigger comes from the dataset card's caption prefix.</span>
+        <span class="hint">${capCfg().layout === "tags_caption" ? "Keeps the tags on line 1 and puts this caption on line 2" : "Replaces the text above"}; then Save. Your trigger comes from the dataset card's caption prefix.</span>
       </div>
     </div>`;
   $("tg-joy-use").onclick = () => {
     const ta = $("tg-caption");
-    ta.value = j.caption;
+    ta.value = CAP.composeCaption(j.caption, capCfg().layout, ta.value, j.tags);
     ta.dispatchEvent(new Event("input"));
   };
 }
@@ -156,7 +156,7 @@ function startCaptionRun(preview) {
         body: {
           items: items.map(({ dir, name }) => ({ dir, name })), caption_ext: tg.ext, options: c, tagger_options: tagOptions(),
           tagger: { model: tg.cfg.model, device: tg.cfg.device, batch_size: tg.cfg.batch_size },
-          mode: c.mode, backup: c.backup, skip_converted: c.skip_converted, preview: preview ? c.preview_n || 30 : 0,
+          mode: c.mode, layout: c.layout, backup: c.backup, skip_converted: c.skip_converted, preview: preview ? c.preview_n || 30 : 0,
         },
       });
       // a quick run may finish (and broadcast "done") before this answer arrives
@@ -165,7 +165,7 @@ function startCaptionRun(preview) {
       showToast(e.message, 9000);
     }
   };
-  if (!preview && c.mode === "replace" && !c.backup) {
+  if (!preview && c.mode === "replace" && !c.backup && c.layout !== "tags_caption") {
     showConfirm("Replace captions", `Replace the captions of up to ${fmt(items.length)} image(s) without keeping the original tags in .tags files? You can still undo the run.`, go, "Replace");
   } else go();
 }
@@ -218,14 +218,14 @@ function renderPreviewResults(run) {
   box.dataset.count = run.results.length;
   box.dataset.started = run.started;
   box.innerHTML = run.results.length
-    ? `<div class="tg-cap-table"><div class="tg-cap-row tg-tag-headrow"><span>Image</span><span>Tag hints</span><span>Prompt</span><span>Caption</span></div>` +
+    ? `<div class="tg-cap-table"><div class="tg-cap-row tg-tag-headrow"><span>Image</span><span>Tag hints</span><span>Prompt</span><span>${run.layout === "tags_caption" ? "Caption file (tags, then caption)" : "Caption"}</span></div>` +
       run.results
         .map(
           (r) => `<div class="tg-cap-row">
         <span><img loading="lazy" src="${tgThumb(r)}" alt="" title="${escapeHtml(r.name)}"><div class="hint">${escapeHtml(r.name)}</div></span>
         <span class="hint">${escapeHtml(r.tags.join(", ")) || "<i>none: fallback template</i>"}</span>
         <span class="hint tg-cap-prompt">${escapeHtml(r.prompt)}</span>
-        <span>${escapeHtml(r.caption)}</span></div>`,
+        <span class="tg-cap-text">${escapeHtml(r.text || r.caption)}</span></div>`,
         )
         .join("") +
       "</div>"

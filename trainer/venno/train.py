@@ -119,6 +119,7 @@ class Trainer:
         self.seed = intv(self.t.get("seed"), 42)
         self.live_text = self.adapter.supports_live_text and not self.t.get("cache_te", True)
         self.variants = max(1, intv(self.t.get("te_variants"), 8))
+        self._choices = {}
 
     # ------------------------------------------------------------- dataset
     def prepare_dataset(self):
@@ -139,6 +140,7 @@ class Trainer:
             more = f"{len(missing) - 10} more; " if len(missing) > 10 else ""
             log(f"  ({more}full list in {listing}; they train with an empty caption. "
                 "Dataset tab → click 'uncaptioned' on a folder to caption them.)")
+        self.log_caption_forms(folders)
         D.read_sizes(self.items)
         self.resolutions = int_list(self.d.get("resolutions"), [1024])
         self.batch_sizes = int_list(self.d.get("batch_sizes"), [1])
@@ -203,10 +205,32 @@ class Trainer:
         progress.close()
         self.adapter.unload_vae()
 
-    def caption_texts(self, item):
-        """Every caption string training may use for this item (cached mode)."""
-        n = self.variants if item.folder.has_tag_ops else 1
-        return [D.caption_variant(item, k, n, self.seed) for k in range(n)]
+    def log_caption_forms(self, folders):
+        """How each folder's captions train: tags, prose, or the mix."""
+        for folder in folders:
+            items = [i for i in self.items if i.folder is folder]
+            with_prose = sum(1 for i in items if i.prose)
+            if not with_prose:
+                continue
+            name = os.path.basename(os.path.normpath(folder.path)) or folder.path
+            if folder.caption_mix:
+                total = sum(folder.caption_mix)
+                mix = ", ".join(f"{k} {w / total:.0%}" for k, w in zip(D.KINDS, folder.caption_mix))
+                rest = len(items) - with_prose
+                log(f"  {name}: caption mix {mix} for {with_prose} image(s) with a caption line"
+                    + (f"; {rest} without one train on their tags" if rest else ""))
+            elif not self.adapter.caption_first_line_only:
+                log(f"  {name}: {with_prose} image(s) train on their tags and caption line together")
+            else:
+                log(f"  {name}: {with_prose} image(s) have a caption line after their tags; this model reads only "
+                    "the tags (line 1) unless the folder sets a caption mix")
+
+    def caption_choices(self, item):
+        """[(weight, [texts])] training draws this item's caption from (cached mode)."""
+        c = self._choices.get(item.image)
+        if c is None:
+            c = self._choices[item.image] = D.caption_choices(item, self.variants, self.seed)
+        return c
 
     def sample_prompts(self):
         prompts = [p for p in self.s.get("prompts", []) if p.get("enabled", True) and str(p.get("text", "")).strip()]
@@ -216,7 +240,8 @@ class Trainer:
         needed = {""}  # caption dropout
         if not self.live_text:
             for item in self.items:
-                needed.update(self.caption_texts(item))
+                for _, texts in self.caption_choices(item):
+                    needed.update(texts)
         for p in self.sample_prompts():
             needed.add(p["text"].strip())
         needed.add((self.s.get("negative") or "").strip())
@@ -360,8 +385,7 @@ class Trainer:
                 if D.is_dropped(item.folder, epoch, rng):
                     text = ""
                 else:
-                    texts = self.caption_texts(item)
-                    text = texts[rng.randrange(len(texts))]
+                    text = D.pick_caption(self.caption_choices(item), rng)
                 conds.append(self.texts.load(text))
             weights.append(item.folder.loss_weight)
         if self.live_text:

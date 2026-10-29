@@ -61,6 +61,7 @@
       tag_dropout: 0.0,
       dropout_every_n_epochs: 0,
       shuffle: false,
+      caption_mix: "", // "tags:prose:both" weights per step, e.g. "25:25:50"; "" = off
       flip: false,
       is_reg: false,
       collapsed: false,
@@ -273,6 +274,11 @@
     }
     const ema = Number(t.ema_decay);
     if (ema && !(ema > 0 && ema < 1)) issues.push({ level: "error", msg: "EMA decay must be between 0 and 1 (0 = off)." });
+    for (const f of folders) {
+      if (!captionMixValid(f.caption_mix)) {
+        issues.push({ level: "error", msg: `Caption mix "${f.caption_mix}" (${String(f.path || "").trim().split(/[\\/]/).filter(Boolean).pop() || "a dataset"}) is not valid: give tags:caption:both weights, e.g. 25:25:50.` });
+      }
+    }
     const tagOps = folders.some((f) => Number(f.tag_dropout) > 0 || f.shuffle);
     if (tagOps && textCached(job) && Number(job.training.te_variants) < 2) {
       issues.push({
@@ -281,6 +287,14 @@
       });
     }
     return issues;
+  }
+
+  // Caption mix: "" or three non-negative weights tags:prose:both, not all 0 (trainer/venno/data.py)
+  function captionMixValid(spec) {
+    const s = String(spec ?? "").replace(/%/g, "").trim();
+    if (!s) return true;
+    const p = s.split(":").map((x) => (x.trim() === "" ? NaN : Number(x)));
+    return p.length === 3 && p.every((x) => Number.isFinite(x) && x >= 0) && p.some((x) => x > 0);
   }
 
   // Clean-end share: "", a share, A:N:B, A:H:B:E or A:H:B:E:R (trainer/venno/timesteps.py)
@@ -310,6 +324,7 @@
     variantOf,
     textCached,
     cleanShareValid,
+    captionMixValid,
     parseIntList,
     repeatsFromFolderName,
     validateJob,

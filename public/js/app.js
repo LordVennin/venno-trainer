@@ -473,6 +473,7 @@ function folderChips(f) {
   if (Number(f.loss_weight) !== 1) chips.push(`<span class="chip" title="Loss weight">w ${escapeHtml(f.loss_weight)}</span>`);
   if (Number(f.caption_dropout) > 0) chips.push(`<span class="chip" title="Caption dropout">cap ${Math.round(f.caption_dropout * 100)}%</span>`);
   if (Number(f.tag_dropout) > 0) chips.push(`<span class="chip" title="Tag dropout">tag ${Math.round(f.tag_dropout * 100)}%</span>`);
+  if (String(f.caption_mix || "").trim()) chips.push(`<span class="chip" title="Caption mix: tags alone : caption alone : both">mix ${escapeHtml(f.caption_mix)}</span>`);
   if (f.is_reg) chips.push('<span class="badge badge-reg">REG</span>');
   return chips.join("");
 }
@@ -536,13 +537,20 @@ function renderDatasets() {
           <div class="form-group">
             <label>Keep Tokens</label>
             <input type="number" data-f="keep_tokens" value="${escapeHtml(f.keep_tokens)}" min="0">
-            <small>Leading tags never dropped/shuffled.</small>
+            <small>Leading tags never dropped/shuffled (line 1 only).</small>
           </div>
         </div>
-        <div class="form-group">
-          <label>Caption Prefix / Trigger</label>
-          <input type="text" data-f="caption_prefix" value="${escapeHtml(f.caption_prefix)}" placeholder="e.g. sks character,">
-          <small>Prepended to every caption in this folder (counts toward keep tokens).</small>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Caption Prefix / Trigger</label>
+            <input type="text" data-f="caption_prefix" value="${escapeHtml(f.caption_prefix)}" placeholder="e.g. sks character,">
+            <small>Prepended to every caption in this folder (counts toward keep tokens).</small>
+          </div>
+          <div class="form-group">
+            <label>Caption Mix (tags:caption:both)</label>
+            <input type="text" data-f="caption_mix" value="${escapeHtml(f.caption_mix || "")}" placeholder="off, e.g. 25:25:50">
+            <small>For captions with tags on line 1 and a caption on line 2: each step trains on the tags alone, the caption alone or both, in these proportions. Blank: MOSS-Image trains on both, Anima on the tags.</small>
+          </div>
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -553,7 +561,7 @@ function renderDatasets() {
           <div class="form-group">
             <label>Tag Dropout</label>
             <input type="number" data-f="tag_dropout" value="${escapeHtml(f.tag_dropout)}" step="0.01" min="0" max="1">
-            <small>Chance to drop each comma-separated tag.</small>
+            <small>Chance to drop each comma-separated tag (line 1 only; a caption line stays whole).</small>
           </div>
           <div class="form-group">
             <label>Caption Dropout Every N Epochs</label>
@@ -721,6 +729,7 @@ const BULK_FIELDS = [
   ["dropout_every_n_epochs", "Caption dropout every N epochs", "number", "1"],
   ["keep_tokens", "Keep tokens", "number", "1"],
   ["caption_prefix", "Caption prefix / trigger", "text"],
+  ["caption_mix", "Caption mix (tags:caption:both)", "text"],
   ["shuffle", "Shuffle captions", "checkbox"],
   ["flip", "Flip augmentation", "checkbox"],
   ["is_reg", "Regularization", "checkbox"],
@@ -742,7 +751,7 @@ function openBulkEdit() {
       const input =
         type === "checkbox"
           ? `<input type="checkbox" class="bulk-val" data-k="${k}" ${first[k] ? "checked" : ""}>`
-          : `<input type="${type}" class="bulk-val" data-k="${k}" value="${escapeHtml(first[k])}" ${step ? `step="${step}"` : ""}>`;
+          : `<input type="${type}" class="bulk-val" data-k="${k}" value="${escapeHtml(first[k] ?? "")}" ${step ? `step="${step}"` : ""}>`;
       return `<div class="bulk-row"><input type="checkbox" class="bulk-on" data-k="${k}"><span>${label}</span>${input}</div>`;
     })
     .join("");

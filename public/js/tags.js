@@ -2,7 +2,9 @@
    (bulk edits, folder auto-tagging): splitting and joining comma-separated
    tags, matching tags written differently ("long_hair" = "long hair" =
    "Long Hair", "\(" = "("), turning model predictions into tags, and bulk
-   rename / remove / add. */
+   rename / remove / add. A caption file may hold prose lines after its tags
+   (Auto-Caption's "tags + caption" layout); every tag operation here works
+   on the tags and keeps the prose as it is. */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.VennoTags = factory();
@@ -26,6 +28,34 @@
       .split(/[,\n\r]+/)
       .map((t) => t.trim())
       .filter(Boolean);
+  }
+
+  // A sentence-like segment: ends a sentence and averages 4+ words per comma
+  // segment (an already-converted caption rather than a tag list).
+  function isProse(text) {
+    const s = String(text || "").trim();
+    if (!/[.!?](\s|$)/.test(s)) return false;
+    const segs = s.split(/[,\n\r]+/).map((t) => t.trim()).filter(Boolean);
+    const words = segs.reduce((n, t) => n + t.split(/\s+/).length, 0);
+    return words / segs.length >= 4;
+  }
+
+  // {tags, prose}: the first line is always tags (one tag per line is
+  // allowed too); prose starts at the first later line that reads as prose.
+  function splitCaption(text) {
+    const lines = String(text || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    let i = 1;
+    while (i < lines.length && !isProse(lines[i])) i++;
+    return { tags: lines.slice(0, i).join("\n"), prose: lines.slice(i).join("\n") };
+  }
+
+  function joinCaption(tags, prose) {
+    return [String(tags || "").trim(), String(prose || "").trim()].filter(Boolean).join("\n");
+  }
+
+  // The tags of a caption file, without any prose lines
+  function captionTags(text) {
+    return splitTags(splitCaption(text).tags);
   }
 
   function joinTags(tags) {
@@ -95,17 +125,20 @@
 
   // Combine a caption with new tags. mode: "overwrite" | "append" | "skip"
   // ("skip" keeps an existing caption untouched).
+  // Prose lines after the tags stay.
   function mergeCaption(existing, newTags, mode) {
-    const old = existing == null ? null : splitTags(existing);
+    const { prose } = splitCaption(existing);
+    const old = existing == null ? null : captionTags(existing);
     if (old && old.length && mode === "skip") return null;
-    if (!old || !old.length || mode === "overwrite") return joinTags(dedupe(newTags));
-    return joinTags(dedupe([...old, ...newTags]));
+    if (!old || !old.length || mode === "overwrite") return joinCaption(joinTags(dedupe(newTags)), prose);
+    return joinCaption(joinTags(dedupe([...old, ...newTags])), prose);
   }
 
   // Bulk edit one caption. op: {type: "remove"|"rename"|"add", tag, to, position}
   // Returns the new caption text, or null when nothing changes.
   function applyOp(text, op) {
-    const tags = splitTags(text);
+    const { prose } = splitCaption(text);
+    const tags = captionTags(text);
     const key = tagKey(op.tag || "");
     if (!key) return null;
     const has = tags.some((t) => tagKey(t) === key);
@@ -124,7 +157,7 @@
     } else {
       throw new Error(`Unknown tag operation: ${op.type}`);
     }
-    return joinTags(out);
+    return joinCaption(joinTags(out), prose);
   }
 
   // Tag counts over captions (strings; null = no caption). The most common
@@ -134,7 +167,7 @@
     for (const cap of captions) {
       if (cap == null) continue;
       const seen = new Set();
-      for (const t of splitTags(cap)) {
+      for (const t of captionTags(cap)) {
         const k = tagKey(t);
         let e = counts.get(k);
         if (!e) counts.set(k, (e = { key: k, count: 0, forms: new Map() }));
@@ -155,7 +188,7 @@
   function matchesFilter(item, expr) {
     const terms = splitTags(expr);
     if (!terms.length) return true;
-    const keys = item.caption == null ? [] : splitTags(item.caption).map(tagKey);
+    const keys = item.caption == null ? [] : captionTags(item.caption).map(tagKey);
     return terms.every((raw) => {
       const neg = raw.startsWith("-");
       let term = neg ? raw.slice(1).trim() : raw;
@@ -169,5 +202,5 @@
     });
   }
 
-  return { KAOMOJI, CATEGORIES, splitTags, joinTags, tagKey, formatTag, dedupe, selectPredictions, mergeCaption, applyOp, countTags, matchesFilter };
+  return { KAOMOJI, CATEGORIES, splitTags, joinTags, isProse, splitCaption, joinCaption, captionTags, tagKey, formatTag, dedupe, selectPredictions, mergeCaption, applyOp, countTags, matchesFilter };
 });

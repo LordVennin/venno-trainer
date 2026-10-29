@@ -1,7 +1,7 @@
 /* Natural-language captions (JoyCaption) shared by the browser (Tagger
    view) and the server (caption runs): tag hints from a caption file or a
-   tagger, the prompt template, and cleaning the model's answer into a
-   one-line caption. Needs tags.js. */
+   tagger, the prompt template, cleaning the model's answer into a one-line
+   caption, and the file layout (the caption alone, or tags + caption). Needs tags.js. */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory(require("./tags"));
   else root.VennoCaptions = factory(root.VennoTags);
@@ -20,17 +20,12 @@
   const LENGTHS = { short: "short", medium: "medium-length", long: "long" };
 
   // Tags from a caption file: comma/line separated, or e621-style space
-  // separated when there is no comma. Prose (sentences of several words, e.g.
-  // an already-converted caption) gives no hints.
-  function isProse(s) {
-    if (!/[.!?](\s|$)/.test(s)) return false;
-    const segs = /[,\n]/.test(s) ? T.splitTags(s) : [s];
-    const words = segs.reduce((n, t) => n + t.split(/\s+/).length, 0);
-    return words / segs.length >= 4;
-  }
+  // separated when there is no comma. Only the tag line(s) of a "tags +
+  // caption" file count; prose (an already-converted caption) gives no hints.
+  const isProse = T.isProse;
 
   function parseTagText(text) {
-    const s = String(text || "").trim();
+    const s = T.splitCaption(text).tags;
     if (!s || isProse(s)) return [];
     return /[,\n]/.test(s) ? T.splitTags(s) : s.split(/\s+/);
   }
@@ -103,11 +98,24 @@
     return s;
   }
 
+  // The caption file's text. layout "caption": the caption alone.
+  // "tags_caption": the original tags as written on line 1, the caption on
+  // line 2. `source` is where the tags come from (the .tags backup when a
+  // run kept one, else the current file); a file without tags gets the hint
+  // tags (e.g. a tagger's) instead, or the caption alone when there are none.
+  function composeCaption(caption, layout, source, hints = []) {
+    if (layout !== "tags_caption") return caption;
+    const raw = T.splitCaption(source).tags;
+    let tags = raw && !isProse(raw) ? (raw.includes("\n") ? T.joinTags(T.splitTags(raw)) : raw) : "";
+    if (!tags && hints && hints.length) tags = T.joinTags(hints);
+    return T.joinCaption(tags, caption);
+  }
+
   function backupPath(image) {
     const dot = image.lastIndexOf(".");
     const slash = Math.max(image.lastIndexOf("/"), image.lastIndexOf("\\"));
     return (dot > slash ? image.slice(0, dot) : image) + BACKUP_EXT;
   }
 
-  return { BACKUP_EXT, DEFAULT_TEMPLATE, DEFAULT_FALLBACK, DEFAULT_STRIP, LENGTHS, isProse, parseTagText, cleanHints, hintsFromPredictions, pickLength, buildPrompt, cleanCaption, backupPath };
+  return { BACKUP_EXT, DEFAULT_TEMPLATE, DEFAULT_FALLBACK, DEFAULT_STRIP, LENGTHS, isProse, parseTagText, cleanHints, hintsFromPredictions, pickLength, buildPrompt, cleanCaption, composeCaption, backupPath };
 });

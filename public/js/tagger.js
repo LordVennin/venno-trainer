@@ -242,7 +242,7 @@ function renderTaggerEditor() {
       <span class="hint">${tg.sel + 1} / ${tg.filtered.length}</span>
       <button class="btn-icon" id="tg-ed-next" title="Next (Alt+→)" ${tg.sel >= tg.filtered.length - 1 ? "disabled" : ""}>→</button>
     </div>
-    <textarea id="tg-caption" rows="5" placeholder="Comma-separated tags">${escapeHtml(it.caption || "")}</textarea>
+    <textarea id="tg-caption" rows="5" placeholder="Comma-separated tags (a caption may follow on the next line)">${escapeHtml(it.caption || "")}</textarea>
     <div class="inline" style="margin:6px 0;">
       <button class="btn btn-sm btn-primary" id="tg-save" title="Ctrl+S; Ctrl+Enter saves and opens the next image">Save</button>
       <button class="btn btn-sm" id="tg-revert">Revert</button>
@@ -283,15 +283,15 @@ function renderTaggerEditor() {
 
 function renderEditorChips() {
   const ta = $("tg-caption");
-  const tags = T.splitTags(ta.value);
+  const tags = T.captionTags(ta.value);
   $("tg-chips").innerHTML = tags
     .map((t, i) => `<span class="tg-chip">${escapeHtml(t)}<button data-i="${i}" title="Remove">×</button></span>`)
     .join("");
   $("tg-chips").querySelectorAll("button").forEach((b) => {
     b.onclick = () => {
-      const list = T.splitTags(ta.value);
+      const list = T.captionTags(ta.value);
       list.splice(+b.dataset.i, 1);
-      ta.value = T.joinTags(list);
+      ta.value = T.joinCaption(T.joinTags(list), T.splitCaption(ta.value).prose);
       ta.dispatchEvent(new Event("input"));
     };
   });
@@ -398,7 +398,7 @@ function renderPredictions() {
   if (!box || !tg.preds) return;
   const opts = tagOptions();
   const picked = new Set(T.selectPredictions(tg.preds.preds, { ...opts, prefix: "" }).map(T.tagKey));
-  const have = new Set(T.splitTags($("tg-caption").value).map(T.tagKey));
+  const have = new Set(T.captionTags($("tg-caption").value).map(T.tagKey));
   const floor = Math.min(0.2, opts.general ?? 0.35);
   const rows = tg.preds.preds
     .filter(([, p, cat, pickedByModel]) => p >= floor || cat === "rating" || pickedByModel)
@@ -420,18 +420,18 @@ function renderPredictions() {
     <div class="tg-pred-list">${rows.join("") || '<p class="hint">No tags above the lowest shown confidence.</p>'}</div>
     <div class="inline" style="margin-top:6px;">
       <button class="btn btn-sm btn-primary" id="tg-pred-add">Add ticked</button>
-      <button class="btn btn-sm" id="tg-pred-replace" title="Replace the caption with your prefix and the ticked tags">Replace caption</button>
+      <button class="btn btn-sm" id="tg-pred-replace" title="Replace the tags with your prefix and the ticked tags (a caption line after them stays)">Replace tags</button>
       <span class="hint">Then Save.</span>
     </div>`;
   const ticked = () => [...box.querySelectorAll("input[data-tag]:checked")].map((c) => c.dataset.tag);
   $("tg-pred-add").onclick = () => {
     const ta = $("tg-caption");
-    ta.value = T.joinTags(T.dedupe([...T.splitTags(ta.value), ...ticked()]));
+    ta.value = T.joinCaption(T.joinTags(T.dedupe([...T.captionTags(ta.value), ...ticked()])), T.splitCaption(ta.value).prose);
     ta.dispatchEvent(new Event("input"));
   };
   $("tg-pred-replace").onclick = () => {
     const ta = $("tg-caption");
-    ta.value = T.joinTags(T.dedupe([...T.splitTags(tg.cfg.prefix), ...ticked()]));
+    ta.value = T.joinCaption(T.joinTags(T.dedupe([...T.splitTags(tg.cfg.prefix), ...ticked()])), T.splitCaption(ta.value).prose);
     ta.dispatchEvent(new Event("input"));
   };
 }

@@ -126,3 +126,13 @@ test("older MOSS jobs are warned about block 22 and shift-5 timesteps; bad setti
   const anima = S.normalizeJob({ model: "anima", training: { timestep: "moss_report" }, dataset: { folders } });
   assert.match(S.validateJob(anima)[0].msg, /MOSS-Image jobs only/);
 });
+
+test("caption mix: blank or three tags:caption:both weights", () => {
+  assert.strictEqual(S.defaultFolder().caption_mix, "");
+  for (const ok of ["", "25:25:50", "1:1:2", "0:50:50%"]) assert.ok(S.captionMixValid(ok), ok);
+  for (const bad of ["25:75", "a:b:c", "0:0:0", "-1:1:1", "25::50"]) assert.ok(!S.captionMixValid(bad), bad);
+  const job = S.normalizeJob({ model: "moss_image", dataset: { folders: [{ ...S.defaultFolder(), path: "/data/fox", caption_mix: "25:75" }] } });
+  const [issue] = S.validateJob(job);
+  assert.strictEqual(issue.level, "error");
+  assert.match(issue.msg, /Caption mix "25:75" \(fox\)/);
+});

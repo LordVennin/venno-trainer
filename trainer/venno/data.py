@@ -2,7 +2,15 @@
 
 Caption processing follows sd-scripts: prefix, whole-caption dropout (rate or
 every N epochs), then shuffle with keep_tokens and per-tag dropout on
-comma-separated tags."""
+comma-separated tags.
+
+A caption file's first line is its tags; any lines after it are prose (the
+Tagger's "tags + caption" layout). Tag shuffle and dropout only touch the tag
+line, so the prose stays intact. Each step trains on one of three forms:
+"tags", "prose", or "both" (tags, then prose). Without a caption mix that is
+"both", or "tags" for a model that reads only the first line (Anima); a
+folder's caption mix (tags:prose:both weights, e.g. 25:25:50) draws the form
+per step instead."""
 
 import math
 import os
@@ -28,6 +36,7 @@ class Folder:
     shuffle: bool = False
     flip: bool = False
     is_reg: bool = False
+    caption_mix: Tuple[float, ...] = ()  # (tags, prose, both) weights; () = off
 
     @property
     def has_tag_ops(self):
@@ -47,20 +56,42 @@ class Folder:
             shuffle=bool(f.get("shuffle")),
             flip=bool(f.get("flip")),
             is_reg=bool(f.get("is_reg")),
+            caption_mix=parse_mix(f.get("caption_mix")),
         )
+
+
+KINDS = ("tags", "prose", "both")
+
+
+def parse_mix(spec):
+    """A caption mix "tags:prose:both" as weights (percentages or any ratio); "" = off."""
+    s = str(spec or "").replace("%", "").strip()
+    if not s:
+        return ()
+    try:
+        parts = tuple(float(x) for x in s.split(":"))
+    except ValueError:
+        parts = ()
+    if len(parts) != 3 or any(not math.isfinite(p) or p < 0 for p in parts) or sum(parts) <= 0:
+        raise ValueError(f"Caption mix '{spec}': give tags:prose:both weights, e.g. 25:25:50 "
+                         "(a quarter of steps on the tags alone, a quarter on the prose alone, half on both)")
+    return parts
 
 
 @dataclass
 class Item:
     image: str
-    caption: str  # raw caption text from file (prefix not applied)
+    caption: str  # the tag line from the file (prefix not applied)
     folder: Folder
     size: Tuple[int, int] = (0, 0)
     # (width, height) bucket per resolution index
     buckets: Dict[int, Tuple[int, int]] = field(default_factory=dict)
+    prose: str = ""  # the lines after the tag line, joined
+    default_kind: str = "both"  # the form trained without a caption mix
 
 
-def read_caption(image_path, caption_ext, first_line_only):
+def read_caption(image_path, caption_ext):
+    """(tag line, prose) from the image's caption file, or None without one."""
     ext = caption_ext if caption_ext.startswith(".") else "." + caption_ext
     cap = os.path.splitext(image_path)[0] + ext
     if not os.path.isfile(cap):
@@ -68,9 +99,7 @@ def read_caption(image_path, caption_ext, first_line_only):
     with open(cap, "r", encoding="utf-8") as f:
         text = f.read()
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if not lines:
-        return ""
-    return lines[0] if first_line_only else " ".join(lines)
+    return (lines[0] if lines else "", " ".join(lines[1:]))
 
 
 def scan_folders(folders: List[Folder], caption_ext=".txt", first_line_only=False):
@@ -81,11 +110,12 @@ def scan_folders(folders: List[Folder], caption_ext=".txt", first_line_only=Fals
         names = sorted(n for n in os.listdir(folder.path) if os.path.splitext(n)[1].lower() in IMAGE_EXTS)
         for name in names:
             path = os.path.join(folder.path, name)
-            caption = read_caption(path, caption_ext, first_line_only)
+            caption = read_caption(path, caption_ext)
             if caption is None:
                 missing.append(path)
-                caption = ""
-            items.append(Item(image=path, caption=caption, folder=folder))
+                caption = ("", "")
+            items.append(Item(image=path, caption=caption[0], folder=folder, prose=caption[1],
+                              default_kind="tags" if first_line_only else "both"))
     return items, missing
 
 
@@ -118,14 +148,56 @@ def tag_process(caption, folder: Folder, rng: random.Random):
     return ", ".join(t for t in fixed + flex if t)
 
 
-def caption_variant(item: Item, k: int, num_variants: int, seed: int):
-    """Deterministic caption variant k for caching (tag ops applied when the
-    folder uses them, otherwise the single plain caption)."""
-    base = join_prefix(item.folder.caption_prefix, item.caption)
-    if not item.folder.has_tag_ops or num_variants <= 1:
-        return base
-    rng = random.Random(f"{seed}:{item.image}:{k}")
-    return tag_process(base, item.folder, rng)
+def join_lines(tags, prose):
+    """Tags, then prose, as one caption: "fox, solo, standing. A red fox stands..."."""
+    if not tags or not prose:
+        return tags or prose
+    return tags + (" " if tags[-1] in ".!?;:," else ". ") + prose
+
+
+def caption_kinds(item: Item):
+    """[(form, weight)] this item's caption is drawn from each step. An image
+    without prose always trains on its one line."""
+    mix = item.folder.caption_mix
+    if not item.prose:
+        return [("tags", 1.0)]
+    if not mix:
+        return [(item.default_kind, 1.0)]
+    return [(k, w) for k, w in zip(KINDS, mix) if w > 0]
+
+
+def compose(item: Item, kind: str, rng: Optional[random.Random] = None):
+    """One form of the caption with the prefix (trigger) in front; tag ops on
+    the tag line only, and only with an rng."""
+    f = item.folder
+    if kind == "prose":
+        return join_prefix(f.caption_prefix, item.prose)
+    tags = join_prefix(f.caption_prefix, item.caption)
+    if rng is not None:
+        tags = tag_process(tags, f, rng)
+    return tags if kind == "tags" else join_lines(tags, item.prose)
+
+
+def caption_choices(item: Item, num_variants: int, seed: int):
+    """[(weight, [texts])] for cached text: each step draws a form by weight,
+    then one of its texts. With tag ops, the forms with a tag line share
+    num_variants deterministic variants (so a mix does not multiply the
+    cache); the prose has one."""
+    kinds = caption_kinds(item)
+    tagged = sum(w for k, w in kinds if k != "prose")
+    out = []
+    for kind, w in kinds:
+        if kind == "prose" or not item.folder.has_tag_ops or num_variants <= 1:
+            out.append((w, [compose(item, kind)]))
+            continue
+        n = max(1, round(num_variants * w / tagged))
+        out.append((w, [compose(item, kind, random.Random(f"{seed}:{item.image}:{k}")) for k in range(n)]))
+    return out
+
+
+def pick_caption(choices, rng: random.Random):
+    texts = choices[0][1] if len(choices) == 1 else rng.choices([t for _, t in choices], weights=[w for w, _ in choices])[0]
+    return texts[rng.randrange(len(texts))] if len(texts) > 1 else texts[0]
 
 
 def caption_live(item: Item, epoch: int, rng: random.Random):
@@ -133,7 +205,9 @@ def caption_live(item: Item, epoch: int, rng: random.Random):
     f = item.folder
     if is_dropped(f, epoch, rng):
         return ""
-    return tag_process(join_prefix(f.caption_prefix, item.caption), f, rng)
+    kinds = caption_kinds(item)
+    kind = kinds[0][0] if len(kinds) == 1 else rng.choices([k for k, _ in kinds], weights=[w for _, w in kinds])[0]
+    return compose(item, kind, rng)
 
 
 def is_dropped(folder: Folder, epoch: int, rng: random.Random):

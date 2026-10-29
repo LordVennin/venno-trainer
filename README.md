@@ -74,7 +74,7 @@ encoder while captions are cached.
 ## Datasets
 
 - **One card per folder** with its own repeats, loss weight, caption dropout, tag dropout,
-  dropout every N epochs, keep tokens, caption prefix/trigger, shuffle, flip and regularization
+  dropout every N epochs, keep tokens, caption prefix/trigger, caption mix, shuffle, flip and regularization
   flag. Cards can be enabled/disabled, reordered, duplicated, collapsed and filtered.
 - **+ Add Subfolders…** adds every subfolder of a parent folder at once; kohya-style names such
   as `10_character` set the repeats.
@@ -85,8 +85,17 @@ encoder while captions are cached.
   image in the folder trains with an empty caption (the images are not skipped). Unlike the Anima
   trainer it also works with text-encoder caching on, where sd-scripts ignores it.
 - Captions are processed in sd-scripts order: prefix → caption dropout (per folder, or whole
-  epochs) → shuffle with keep tokens → tag dropout on comma-separated tags. Anima reads the first
-  caption line (as sd-scripts does); MOSS uses the whole file.
+  epochs) → shuffle with keep tokens → tag dropout on comma-separated tags.
+- **Tags + caption files.** A caption file's first line is its tags; any lines after it are a
+  natural-language caption (Auto-Caption's *Tags + caption* layout). Shuffle, keep tokens and tag
+  dropout only touch the tag line, so the caption is never scrambled. MOSS trains on both lines
+  (`tags. caption`); Anima reads the first line, as sd-scripts does.
+- **Caption mix** (per folder, e.g. `25:25:50`): for images with a caption line, each step trains
+  on the tags alone, the caption alone, or both, in these proportions, so the LoRA answers tag
+  prompts, prose prompts and mixed ones. The trigger is in front of all three. With cached text
+  the tag-line forms share the *Caption variants per image*, so a mix adds only one cached
+  caption per image. It also lets Anima train on the caption line. Images without a caption line
+  train on their one line.
 - **Dropout with cached captions.** Caption dropout uses a cached empty caption. For folders with
   tag dropout or shuffling, *Caption variants per image* (default 8) randomized captions are cached
   and one is picked each step. For Anima you can instead turn caching off: the small Qwen3 encoder
@@ -152,8 +161,12 @@ prompt as hints, so species, characters and details come out right:
 - **Tag hints from** the image's caption file (comma- or space-separated), or from the selected
   tagger, e.g. Hydra 3.5, run on every image first and not saved. The Never Add list, underscores →
   spaces, excluded categories (artist and meta by default) and a 60-tag cap clean the hints.
-- **Output**: one line per caption (Anima reads only the first line), with filler openers such as
-  "This image shows" removed (editable list). Do not put a trigger in the template: the dataset
+- **Output**: one line per caption, with filler openers such as "This image shows" removed
+  (editable list). **Write: Tags + caption** (the default) keeps the original tags as written on
+  line 1 (from the `.tags` backup if an earlier run replaced them, or the tagger's hints for an
+  untagged image) and puts the caption on line 2; *The caption only* replaces the file. The
+  Images tab's tag tools (chips, bulk rename/remove/add, auto-tag, counts and filters) work on
+  the tag line and keep the caption line. Do not put a trigger in the template: the dataset
   card's *Caption Prefix / Trigger* adds it during training.
 - **Runs**: only uncaptioned images or replace captions, optionally keeping the original tags in
   `<image>.tags` (the trainer, the dataset scanner and the Tagger ignore that extension). *Skip

@@ -39,14 +39,67 @@ class DataTests(unittest.TestCase):
     def test_caption_processing_order(self):
         f = D.Folder(path="x", caption_prefix="sks,", keep_tokens=1, shuffle=True, tag_dropout=0.5)
         item = D.Item(image="a.png", caption="a, b, c, d, e", folder=f)
-        texts = {D.caption_variant(item, k, 8, 42) for k in range(8)}
-        self.assertGreater(len(texts), 1)
+        [(_, texts)] = D.caption_choices(item, 8, 42)
+        self.assertEqual(len(texts), 8)
+        self.assertGreater(len(set(texts)), 1)
         for t in texts:
             self.assertTrue(t.startswith("sks"), t)  # keep_tokens keeps the prefix tag first
         # deterministic per (seed, image, k)
-        self.assertEqual(D.caption_variant(item, 3, 8, 42), D.caption_variant(item, 3, 8, 42))
+        self.assertEqual(texts, D.caption_choices(item, 8, 42)[0][1])
         plain = D.Item(image="b.png", caption="a, b", folder=D.Folder(path="x", caption_prefix="sks,"))
-        self.assertEqual(D.caption_variant(plain, 0, 8, 42), "sks, a, b")
+        self.assertEqual(D.caption_choices(plain, 8, 42), [(1.0, ["sks, a, b"])])
+
+    def test_tags_and_prose_lines(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            F.make_images(tmp, 2)
+            with open(os.path.join(tmp, "img000.txt"), "w") as fh:
+                fh.write("fox, solo, standing\nA red fox stands in the snow, looking back.\n")
+            folder = D.Folder(path=tmp, caption_prefix="sks,", keep_tokens=1, shuffle=True, tag_dropout=0.3)
+            items, _ = D.scan_folders([folder], ".txt")
+            fox = items[0]
+            self.assertEqual((fox.caption, fox.prose), ("fox, solo, standing", "A red fox stands in the snow, looking back."))
+            self.assertEqual(fox.default_kind, "both")
+            # tag ops touch only the tag line: the prose ends every variant intact
+            [(_, texts)] = D.caption_choices(fox, 8, 0)
+            for t in texts:
+                self.assertTrue(t.startswith("sks"), t)
+                self.assertTrue(t.endswith(". A red fox stands in the snow, looking back."), t)
+            rng = random.Random(0)
+            live = {D.caption_live(fox, 0, rng) for _ in range(30)}
+            self.assertTrue(all(t.endswith("looking back.") for t in live))
+            self.assertEqual(D.compose(fox, "prose"), "sks, A red fox stands in the snow, looking back.")
+            # a model that reads only line 1 (Anima) trains on the tags without a mix
+            first, _ = D.scan_folders([D.Folder(path=tmp)], ".txt", first_line_only=True)
+            self.assertEqual(D.caption_choices(first[0], 8, 0), [(1.0, ["fox, solo, standing"])])
+            # an image without a caption line trains on its one line, mix or not
+            self.assertEqual(D.caption_kinds(items[1]), [("tags", 1.0)])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_caption_mix(self):
+        self.assertEqual(D.parse_mix(""), ())
+        self.assertEqual(D.parse_mix("25:25:50%"), (25.0, 25.0, 50.0))
+        for bad in ("25:75", "a:b:c", "0:0:0", "-1:1:1"):
+            with self.assertRaises(ValueError):
+                D.parse_mix(bad)
+        f = D.Folder(path="x", caption_mix=D.parse_mix("25:25:50"), shuffle=True)
+        item = D.Item(image="a.png", caption="fox, solo", folder=f, prose="A fox.")
+        choices = D.caption_choices(item, 8, 0)
+        self.assertEqual([w for w, _ in choices], [25.0, 25.0, 50.0])
+        # the tag-line forms share the variant budget: 8 in total, plus one prose
+        self.assertEqual([len(t) for _, t in choices], [3, 1, 5])
+        self.assertEqual(choices[1][1], ["A fox."])
+        rng = random.Random(1)
+        picks = [D.pick_caption(choices, rng) for _ in range(4000)]
+        share = lambda pred: sum(map(pred, picks)) / len(picks)
+        self.assertAlmostEqual(share(lambda t: t == "A fox."), 0.25, delta=0.03)
+        self.assertAlmostEqual(share(lambda t: t.endswith("A fox.") and t != "A fox."), 0.5, delta=0.03)
+        self.assertAlmostEqual(share(lambda t: "A fox" not in t), 0.25, delta=0.03)
+        # a weight of 0 leaves that form out
+        only = D.Folder(path="x", caption_mix=D.parse_mix("0:50:50"))
+        self.assertEqual([k for k, _ in D.caption_kinds(D.Item("b.png", "fox", only, prose="A fox."))], ["prose", "both"])
+        self.assertEqual(D.join_lines("fox, solo.", "A fox."), "fox, solo. A fox.")
 
     def test_dropout_every_n_epochs(self):
         # sd-scripts counts epochs from 1: N=3 drops captions on epochs 3, 6, ...
@@ -281,6 +334,34 @@ class MossTests(unittest.TestCase):
         trainer.set_epoch(1)
         s = trainer.sample_sigmas(20000, g)
         self.assertAlmostEqual(float((s < 0.5).float().mean()), 0.30, delta=0.02)
+
+    def test_caption_mix_caches_every_form(self):
+        data = os.path.join(self.tmp, "data", "mix")
+        F.make_images(data, 2, caption=lambda i: f"fox, solo, tag{i}\nA red fox number {i} sits in the grass.")
+        out = os.path.join(self.tmp, "out_mix")
+        job = F.base_job("moss_image", [{"path": data, "caption_mix": "25:25:50", "shuffle": True, "keep_tokens": 1}],
+                         duration_unit="steps", max_steps=2, save_every_epochs=10, output_name="moss_mix", workers=1, te_variants=4, optimizer="AdamW")
+        job["dataset"].update(resolutions="64", batch_sizes="1", min_bucket=32, max_bucket=128, bucket_steps=16)
+        job["network"].update(dim=4, alpha=4)
+        job["sampling"]["enabled"] = False
+        lines = []
+        orig_log = T.log
+        T.log = lambda *a: (lines.append(" ".join(map(str, a))), orig_log(*a))
+        try:
+            trainer = T.Trainer(run_config(job, self.paths, out, os.path.join(self.tmp, "cache_mix")))
+            T._stop_requested = False
+            trainer.train()
+        finally:
+            T.log = orig_log
+        self.assertIn("  mix: caption mix tags 25%, prose 25%, both 50% for 2 image(s) with a caption line", lines)
+        item = trainer.items[0]
+        forms = trainer.caption_choices(item)
+        self.assertEqual([len(t) for _, t in forms], [1, 1, 3], "4 variants shared by tags and both, plus the prose")
+        for _, texts in forms:
+            for text in texts:
+                self.assertTrue(trainer.texts.has(text), text)
+        self.assertEqual(forms[1][1], ["A red fox number 0 sits in the grass."])
+        self.assertTrue(all(t.startswith("fox, ") and t.endswith(". A red fox number 0 sits in the grass.") for t in forms[2][1]))
 
     def test_train_keys_and_lora_roundtrip(self):
         out = os.path.join(self.tmp, "out")
