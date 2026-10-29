@@ -74,6 +74,13 @@ test("captions are one line without filler openers", () => {
   assert.strictEqual(C.cleanCaption("This image shows a fox", { strip: "" }), "This image shows a fox");
 });
 
+test("markdown in an answer is reduced to its text; the templates ask for watermarks without their text", () => {
+  const raw = 'The **artist\'s** watermark, "©2023 [www.patreon.com/elfponya](https://www.patreon.com/elfponya)," is in the corner <https://x.y/z>.';
+  assert.strictEqual(C.cleanCaption(raw), 'The artist\'s watermark, "©2023 www.patreon.com/elfponya," is in the corner https://x.y/z.');
+  assert.strictEqual(C.cleanCaption("A snake_case_name and a__b stay."), "A snake_case_name and a__b stay.");
+  for (const tpl of [C.DEFAULT_TEMPLATE, C.DEFAULT_FALLBACK]) assert.match(tpl, /watermark, signature or logo, say so and where it is, but do not write out its text/);
+});
+
 test("backups use an extension the scanner, trainer and Tagger ignore", () => {
   assert.strictEqual(C.backupPath("/d/img.01.png"), "/d/img.01.tags");
   const dir = tmpDataset({ "a.png": "fox" });

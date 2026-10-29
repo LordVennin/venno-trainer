@@ -161,8 +161,11 @@ prompt as hints, so species, characters and details come out right:
 - **Tag hints from** the image's caption file (comma- or space-separated), or from the selected
   tagger, e.g. Hydra 3.5, run on every image first and not saved. The Never Add list, underscores →
   spaces, excluded categories (artist and meta by default) and a 60-tag cap clean the hints.
-- **Output**: one line per caption, with filler openers such as "This image shows" removed
-  (editable list). **Write: Tags + caption** (the default) keeps the original tags as written on
+- **Watermarks**: the default templates ask JoyCaption to mention a watermark, signature or logo
+  and where it is, without writing out its text or URL, so "watermark" works in a negative
+  prompt and the LoRA does not learn to write an artist's Patreon address.
+- **Output**: one line per caption, with markdown links and bold reduced to their text and filler
+  openers such as "This image shows" removed (editable list). **Write: Tags + caption** (the default) keeps the original tags as written on
   line 1 (from the `.tags` backup if an earlier run replaced them, or the tagger's hints for an
   untagged image) and puts the caption on line 2; *The caption only* replaces the file. The
   Images tab's tag tools (chips, bulk rename/remove/add, auto-tag, counts and filters) work on

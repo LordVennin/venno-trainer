@@ -10,10 +10,15 @@
 
   const BACKUP_EXT = ".tags";
 
+  // Watermarks are named (so "watermark" can go in a negative prompt) but not
+  // copied: a URL or handle in the caption would teach the LoRA to write it.
+  const WATERMARK = "If there is a watermark, signature or logo, say so and where it is, but do not write out its text, names or web addresses.";
+
   const DEFAULT_TEMPLATE =
     "Write a {length} descriptive caption for this image in a formal tone. These tags were written by a person and are accurate: {tags}. " +
-    "Use them to correctly identify species, characters, and details, but only describe what is visible, and write natural sentences, not a list.";
-  const DEFAULT_FALLBACK = "Write a {length} descriptive caption for this image in a formal tone. Only describe what is visible, and write natural sentences, not a list.";
+    "Use them to correctly identify species, characters, and details, but only describe what is visible, and write natural sentences, not a list. " +
+    WATERMARK;
+  const DEFAULT_FALLBACK = "Write a {length} descriptive caption for this image in a formal tone. Only describe what is visible, and write natural sentences, not a list. " + WATERMARK;
   const DEFAULT_STRIP = ["This image shows", "This image depicts", "The image shows", "The image depicts", "This is an image of", "This is a picture of", "In this image,", "In the image,"];
 
   // {length} words for each setting; "mixed" picks one per image
@@ -80,10 +85,16 @@
     return DEFAULT_STRIP;
   }
 
-  // The model's answer as a caption: one line, filler openers removed
-  // ("This image shows a fox" -> "A fox"), whitespace trimmed.
+  // The model's answer as a caption: one line, markdown links and emphasis
+  // reduced to their text, filler openers removed ("This image shows a fox"
+  // -> "A fox"), whitespace trimmed.
   function cleanCaption(text, opts = {}) {
-    let s = String(text || "").replace(/\s+/g, " ").trim();
+    let s = String(text || "")
+      .replace(/\[([^\]]*)\]\([^)\s]*\)/g, "$1")
+      .replace(/<(https?:\/\/[^>\s]+)>/g, "$1")
+      .replace(/(\*\*|__)(?=\S)(.+?)(?<=\S)\1/g, "$2")
+      .replace(/\s+/g, " ")
+      .trim();
     const openers = stripList(opts).map((o) => o.trim()).filter(Boolean);
     for (let changed = true; changed; ) {
       changed = false;
