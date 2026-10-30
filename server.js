@@ -258,19 +258,52 @@ app.post("/api/jobs/:name/train/start", h((req, res) => {
   fs.writeFileSync(result.runPath, JSON.stringify(result.run, null, 2));
   const scriptName = process.platform === "win32" ? "launch_command.bat" : "launch_command.sh";
   fs.writeFileSync(path.join(jobDir(name), scriptName), launchScript(python, result.args, result.cwd, result.env), { mode: 0o755 });
+  const run = launch(name, job, python, result, `${S.MODELS[job.model].label} (${S.variantOf(job).label || job.variant})`);
+  res.json({ ok: true, pid: run.pid });
+}));
 
-  const header = `--- ${S.MODELS[job.model].label} (${S.variantOf(job).label || job.variant}) ---\n$ ${[python, ...result.args].join(" ")}\n\n`;
+// Start the trainer process for a job; its log and progress stream like training.
+function launch(name, job, python, result, title, { keepProgress = true } = {}) {
+  const header = `--- ${title} ---\n$ ${[python, ...result.args].join(" ")}\n\n`;
   const run = runner.start(name, {
     python,
     args: result.args,
     cwd: result.cwd,
     env: result.env,
     logsDir: result.logsDir,
-    progressPath: path.join(jobDir(name), "progress.json"),
+    // a samples-only run leaves the last training run's progress and loss chart alone
+    progressPath: keepProgress ? path.join(jobDir(name), "progress.json") : null,
   });
   run.logBuffer.unshift(header);
   broadcast(name, { type: "log", data: header });
-  res.json({ ok: true, pid: run.pid });
+  return run;
+}
+
+// Samples from a saved LoRA of the job, without training: the job's prompts
+// once per variant (as trained, with modules muted, or with every block in
+// the CFG negative branch for MOSS-Image), to see what a block does.
+app.post("/api/jobs/:name/samples/from-lora", h((req, res) => {
+  const name = sanitizeName(req.params.name);
+  if (runner.isRunning(name)) return res.status(400).json({ error: "This job is running; wait for it to finish" });
+  const job = readJob(name);
+  const settings = getSettings();
+  const errors = native.checkSettings(job, settings);
+  if (errors.length) return res.status(400).json({ error: errors.join("\n") });
+  const { file, variants = [{}] } = req.body || {};
+  if (!Array.isArray(variants) || !variants.length) return res.status(400).json({ error: "Pick at least one kind of sample" });
+  const python = pythonFor(settings);
+  const { result } = buildForJob(name, job);
+  const lora = path.resolve(result.outputDir, String(file || ""));
+  if (path.dirname(lora) !== path.resolve(result.outputDir) || !lora.endsWith(".safetensors") || !fs.existsSync(lora)) {
+    return res.status(400).json({ error: "Pick a LoRA file from this job's output folder" });
+  }
+  const runPath = path.join(jobDir(name), "run-samples.json");
+  const clean = variants.map((v) => ({ drop_layers: String((v && v.drop_layers) || ""), uncond_skip: !(v && v.uncond_skip === false) }));
+  const run = { ...result.run, sample_lora: { lora, variants: clean } };
+  fs.writeFileSync(runPath, JSON.stringify(run, null, 2));
+  const args = ["-m", "venno.train", runPath];
+  const started = launch(name, job, python, { ...result, args }, `Samples from ${path.basename(lora)}`, { keepProgress: false });
+  res.json({ ok: true, pid: started.pid });
 }));
 
 app.post("/api/jobs/:name/train/stop", h((req, res) => {

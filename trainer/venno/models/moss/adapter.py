@@ -310,7 +310,7 @@ class MossAdapter(base.ModelAdapter):
         return self.dit(noisy, sigmas * NUM_TRAIN_TIMESTEPS, text["embeds"], text["mask"])
 
     @torch.no_grad()
-    def sample(self, cond, uncond, width, height, steps, cfg, seed, shift):
+    def sample(self, cond, uncond, width, height, steps, cfg, seed, shift, uncond_skip=UNCOND_SKIP_LAYERS):
         width, height = width // 16 * 16, height // 16 * 16
         c = self.collate_text([cond])
         do_cfg = uncond is not None and cfg != 1.0
@@ -324,7 +324,7 @@ class MossAdapter(base.ModelAdapter):
             t = (sig[i] * NUM_TRAIN_TIMESTEPS).reshape(1)
             pred = self.dit(latents, t, c["embeds"], c["mask"]).float()
             if do_cfg:
-                pu = self.dit(latents, t, u["embeds"], u["mask"], skip_layers=UNCOND_SKIP_LAYERS).float()
+                pu = self.dit(latents, t, u["embeds"], u["mask"], skip_layers=uncond_skip).float()
                 pred = pu + cfg * (pred - pu)
             latents = latents + (sig[i + 1] - sig[i]) * pred
         pixels = self.decode_latents(latents)

@@ -199,9 +199,11 @@ first, so the models swap once per run), and the idle unload applies to it too.
   epochs, and Slide was tuned on small datasets trained for ~70 epochs: a run of a few epochs over a
   big dataset stays at its first share, so set a single share (e.g. `40`) or a schedule that fits your
   epoch count. Ported from [Fizgig](https://github.com/shootthesound/Fizgig) (Apache-2.0).
-- **What the LoRA trains**: all 42 MOSS-Image blocks (the sampler skips block 22 only on the CFG
-  negative branch; AI-Toolkit and Fizgig train it too; jobs from earlier Venno versions that left it
-  out get a warning), and Anima's attention and MLP layers, leaving out the adaLN modulation layers
+- **What the LoRA trains**: all 42 MOSS-Image blocks by default, as Fizgig trains them (its A/B
+  tests found better likeness than leaving block 22 out). MOSS's sampler skips block 22 on the CFG
+  negative branch, so a LoRA's block-22 change is multiplied by the CFG scale on every prompt; a
+  large LoRA can then pull every sample toward one image. *Skip Layers* `layers.22.` leaves it out.
+  Anima trains its attention and MLP layers, leaving out the adaLN modulation layers
   (a third of the LoRA, prone to colour and contrast shifts) unless you clear *Skip Layers*.
 - **EMA** (decay 0.98 by default): checkpoints and samples are made from a running average of the
   LoRA weights while training runs on the raw ones, for smoother, less distorted epochs. It costs
@@ -215,6 +217,10 @@ first, so the models swap once per run), and the idle unload applies to it too.
 - Sample images during training use each model's own sampler: Euler with CFG for Anima, and for
   MOSS the vendor's snapped shift-5 schedule with block 22 skipped on the negative branch. The
   Prompts tab sets size, steps, CFG, seed and shift per prompt.
+- **Generate Samples from a Saved LoRA** (Samples tab) makes the job's sample prompts with any LoRA
+  in the output folder, without training, as several side-by-side sets: as trained, and for MOSS
+  without the LoRA's block 22, or with block 22 also run in the negative branch. The model loads
+  once.
 - Console with live progress, ETA and a loss chart; samples gallery and checkpoint list.
 - **Clone to another model** keeps the dataset folders and prompts and takes that model's defaults
   for everything else.

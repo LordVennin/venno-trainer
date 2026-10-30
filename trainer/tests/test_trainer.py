@@ -11,7 +11,9 @@ import sys
 import tempfile
 import unittest
 
+import numpy as np
 import torch
+from PIL import Image
 from safetensors import safe_open
 from safetensors.torch import load_file
 
@@ -334,6 +336,36 @@ class MossTests(unittest.TestCase):
         trainer.set_epoch(1)
         s = trainer.sample_sigmas(20000, g)
         self.assertAlmostEqual(float((s < 0.5).float().mean()), 0.30, delta=0.02)
+
+    def test_samples_from_a_saved_lora(self):
+        out = os.path.join(self.tmp, "out_fl")
+        job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}],
+                         duration_unit="steps", max_steps=4, save_every_epochs=10, optimizer="AdamW", lr="1e-2",
+                         output_name="moss_fl", workers=1, ema_decay=0)
+        job["dataset"].update(resolutions="64", batch_sizes="1", min_bucket=32, max_bucket=128, bucket_steps=16)
+        job["network"].update(dim=4, alpha=4)
+        job["sampling"].update(enabled=False, width=64, height=64, steps=2,
+                               prompts=[{"text": "A photo of a red object.", "enabled": True}])
+        cache = os.path.join(self.tmp, "cache_fl")
+        T._stop_requested = False
+        T.Trainer(run_config(job, self.paths, out, cache)).train()
+        lora = os.path.join(out, "moss_fl.safetensors")
+        run = dict(run_config(job, self.paths, out, cache),
+                   sample_lora={"lora": lora, "variants": [{}, {"drop_layers": "layers.0."}, {"uncond_skip": False}]})
+        trainer = T.Trainer(run)
+        skips, orig = [], trainer.adapter.sample
+
+        def sample(*a, **k):
+            skips.append(k.get("uncond_skip", "default"))
+            return orig(*a, **k)
+
+        trainer.adapter.sample = sample
+        trainer.sample_lora(run["sample_lora"])
+        names = sorted(f for f in os.listdir(os.path.join(out, "samples")) if f.endswith(".png"))
+        self.assertEqual(names, ["moss_fl_00_42.png", "moss_fl_full-negative_00_42.png", "moss_fl_without-layers0_00_42.png"])
+        self.assertEqual(skips, ["default", "default", ()], "only the third set runs every block in the negative branch")
+        load = lambda n: np.asarray(Image.open(os.path.join(out, "samples", n)), dtype=np.int16)
+        self.assertGreater(np.abs(load(names[0]) - load(names[2])).max(), 0, "muting block 0 of the LoRA changes the image")
 
     def test_caption_mix_caches_every_form(self):
         data = os.path.join(self.tmp, "data", "mix")

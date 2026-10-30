@@ -849,6 +849,9 @@ async function loadSamples() {
     sampleImages = data.images;
     renderSamples();
     $("ckpt-count").textContent = ck.checkpoints.length;
+    const pick = $("fl-file").value;
+    $("fl-file").innerHTML = ck.checkpoints.map((c) => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join("") || '<option value="">No LoRA files yet</option>';
+    if (ck.checkpoints.some((c) => c.name === pick)) $("fl-file").value = pick;
     $("ckpt-list").innerHTML =
       ck.checkpoints
         .map((c) => `<div><span>${escapeHtml(c.name)}</span><span class="hint">${(c.size / 1048576).toFixed(1)} MB · ${new Date(c.mtime).toLocaleString()}</span></div>`)
@@ -1243,6 +1246,29 @@ function fillVariantSelect() {
   $("new-job-variant").innerHTML = Object.entries(m.variants).map(([id, v]) => `<option value="${id}">${escapeHtml(v.label)}</option>`).join("");
 }
 
+// Samples from a saved LoRA, without training: one set per ticked kind.
+async function generateFromLora() {
+  const file = $("fl-file").value;
+  if (!file) return showToast("No LoRA file in this job's output folder yet");
+  const moss = job.model === "moss_image";
+  const variants = [];
+  if ($("fl-plain").checked) variants.push({});
+  if (moss && $("fl-no22").checked) variants.push({ drop_layers: "layers.22." });
+  if (moss && $("fl-fullneg").checked) variants.push({ uncond_skip: false });
+  if (!variants.length) return showToast("Tick at least one kind of sample");
+  if (!job.sampling.prompts.some((p) => p.enabled !== false && String(p.text || "").trim())) {
+    return showToast("Add sample prompts first (Prompts tab)");
+  }
+  try {
+    if (isDirty()) await saveJob(true);
+    resetConsole();
+    await api(`/api/jobs/${encodeURIComponent(currentJob)}/samples/from-lora`, { method: "POST", body: { file, variants } });
+    switchTab("console");
+  } catch (e) {
+    showToast(e.message, 7000);
+  }
+}
+
 async function startTraining() {
   try {
     if (isDirty()) await saveJob(true);
@@ -1420,6 +1446,7 @@ function bindEvents() {
 
   // samples
   $("btn-refresh-samples").onclick = loadSamples;
+  $("fl-run").onclick = generateFromLora;
   $("samples-limit").onchange = renderSamples;
   $("thumb-size").oninput = (e) => $("samples-grid").style.setProperty("--thumb", e.target.value + "px");
   $("btn-open-samples").onclick = async () => {

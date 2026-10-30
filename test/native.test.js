@@ -44,7 +44,7 @@ test("model defaults follow the original trainers", () => {
   const m = S.defaultJob("moss_image");
   assert.strictEqual(m.variant, "sft");
   assert.strictEqual(m.training.flow_shift, 5);
-  assert.strictEqual(m.network.ignore_layers, ""); // all 42 blocks (layers.22. was a mistake)
+  assert.strictEqual(m.network.ignore_layers, ""); // all 42 blocks, as Fizgig trains them
   assert.strictEqual(m.sampling.cfg, 3);
   assert.ok(S.textCached(m));
 });
@@ -113,14 +113,12 @@ test("model defaults: MOSS trains all blocks with its report timesteps; Anima sk
   assert.deepStrictEqual(S.validateJob({ ...m, dataset: { ...m.dataset, folders: [{ ...m.dataset.folders[0], path: "/d" }] } }), []);
 });
 
-test("older MOSS jobs are warned about block 22 and shift-5 timesteps; bad settings are errors", () => {
+test("older MOSS jobs are warned about shift-5 timesteps; leaving block 22 out is not warned; bad settings are errors", () => {
   const folders = [{ ...S.defaultFolder(), path: "/d" }];
   const old = S.normalizeJob({ model: "moss_image", training: { timestep: "uniform", flow_shift: 5 }, network: { ignore_layers: "layers.22." }, dataset: { folders } });
   const msgs = S.validateJob(old).map((i) => `${i.level}: ${i.msg}`);
-  assert.strictEqual(msgs.length, 2);
-  assert.match(msgs[0], /^warn: Block 22 is left out/);
-  assert.match(msgs[1], /^warn: This job uses AI-Toolkit's shift-5/);
-  assert.strictEqual(S.validateJob(S.normalizeJob({ model: "moss_image", network: { ignore_layers: "layers.2." }, dataset: { folders } })).length, 0, "layers.2. is not block 22");
+  assert.strictEqual(msgs.length, 1);
+  assert.match(msgs[0], /^warn: This job uses AI-Toolkit's shift-5/);
   const bad = S.normalizeJob({ model: "moss_image", training: { clean_end_share: "60:7", ema_decay: 1.5 }, dataset: { folders } });
   assert.deepStrictEqual(S.validateJob(bad).map((i) => i.level), ["error", "error"]);
   const anima = S.normalizeJob({ model: "anima", training: { timestep: "moss_report" }, dataset: { folders } });

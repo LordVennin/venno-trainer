@@ -271,7 +271,7 @@ class Trainer:
             self.adapter.unload_text_encoder()
 
     # ---------------------------------------------------------------- model
-    def setup_model(self):
+    def load_dit(self):
         log("Loading DiT...")
         dit = self.adapter.load_dit()
         if self.t.get("fp8_base"):
@@ -281,6 +281,9 @@ class Trainer:
                 n = quantize_modules(dit, self.adapter.fp8_prefixes(), self.dtype)
                 log(f"Stored {n} base Linear weights as fp8")
                 free_memory()
+
+    def setup_model(self):
+        self.load_dit()
         ignore = [p for p in re.split(r"[,\s]+", self.n.get("ignore_layers") or "") if p]
         targets = self.adapter.lora_targets(ignore)
         rank = max(1, intv(self.n.get("dim"), 16))
@@ -519,7 +522,7 @@ class Trainer:
         with self.averaged():
             self._generate(prompts, tag)
 
-    def _generate(self, prompts, tag):
+    def _generate(self, prompts, tag, prefix=None, **sample_kw):
         self.adapter.load_vae()
         neg_text = (self.s.get("negative") or "").strip()
         uncond = self.texts.load(neg_text)
@@ -534,10 +537,10 @@ class Trainer:
             steps = intv(p.get("steps"), intv(self.s.get("steps"), 28))
             cfg = num(p.get("cfg"), num(self.s.get("cfg"), 4.0))
             seed = intv(p.get("seed"), intv(self.s.get("seed"), 42))
-            img = self.adapter.sample(self.texts.load(text), uncond, w, h, steps, cfg, seed, shift)
+            img = self.adapter.sample(self.texts.load(text), uncond, w, h, steps, cfg, seed, shift, **sample_kw)
             info = PngInfo()
             info.add_text("parameters", f"{text}\nNegative prompt: {neg_text}\nSteps: {steps}, CFG scale: {cfg}, Seed: {seed}, Size: {w}x{h}, Shift: {shift}")
-            img.save(os.path.join(self.samples_dir, f"{self.name}_{tag}_{i:02d}_{seed}.png"), pnginfo=info)
+            img.save(os.path.join(self.samples_dir, f"{prefix or self.name + '_' + tag}_{i:02d}_{seed}.png"), pnginfo=info)
         self.adapter.unload_vae()
         if self.device.type == "cuda":
             torch.cuda.reset_peak_memory_stats()
@@ -545,6 +548,57 @@ class Trainer:
             self.adapter.dit.train()
             self.network.train()
         free_memory()
+
+    def sample_lora(self, opts):
+        """The job's sample prompts from a saved LoRA file, without training (run.json "sample_lora"), once
+        per variant: {"drop_layers": modules muted for it (e.g. "layers.22."), "uncond_skip": False to run
+        every block in the CFG negative branch (MOSS-Image skips block 22 there)}. The model loads once."""
+        path = opts["lora"]
+        variants = opts.get("variants") or [{}]
+        self.s = dict(self.s, enabled=True)  # asked for, even if the job samples nothing during training
+        prompts = self.sample_prompts()
+        if not prompts:
+            raise ValueError("The job has no enabled sample prompts (Prompts tab).")
+        self.items = []  # only the sample prompts need text embeddings
+        self.adapter.fetch_models()
+        self.cache_text()
+        sd = self.adapter.import_lora(load_file(path))
+        self.load_dit()
+        in_file = {k[: -len(".lora_down.weight")] for k in sd if k.endswith(".lora_down.weight")}
+        targets = [(n, m) for n, m in self.adapter.lora_targets([]) if n in in_file]
+        if not targets:
+            raise ValueError(f"No LoRA modules of this model in {path}")
+        first = targets[0][0]
+        rank = sd[f"{first}.lora_down.weight"].shape[0]
+        alpha = float(sd[f"{first}.alpha"]) if f"{first}.alpha" in sd else rank
+        self.network = LoRANetwork(targets, rank, alpha).to(self.device)
+        self.network.load_internal_state_dict(sd)
+        self.network.apply_to()
+        self.ema = None
+        stem = os.path.splitext(os.path.basename(path))[0]
+        log(f"LoRA {os.path.basename(path)}: {len(targets)} modules, rank {rank}, alpha {alpha:g}")
+        for v in variants:
+            check_stop()
+            drop = [p for p in re.split(r"[,\s]+", v.get("drop_layers") or "") if p]
+            muted = 0
+            for lora in self.network.loras.values():
+                hit = any(p in lora.name + "." for p in drop)
+                lora.multiplier = 0.0 if hit else 1.0
+                muted += hit
+            if drop and not muted:
+                log(f"No LoRA modules match {', '.join(drop)}; that set is skipped")
+                continue
+            tag, notes, kw = stem, [], {}
+            if muted:
+                tag += "_without-" + "-".join(re.sub(r"[^0-9A-Za-z]+", "", p) for p in drop)
+                notes.append(f"{muted} LoRA modules muted ({', '.join(drop)})")
+            if v.get("uncond_skip", True) is False:
+                kw["uncond_skip"] = ()
+                tag += "_full-negative"
+                notes.append("the CFG negative branch runs every block")
+            log(f"Generating {len(prompts)} sample(s): " + ("; ".join(notes) if notes else "the LoRA as trained"))
+            self._generate(prompts, tag, prefix=tag, **kw)
+        log("Samples finished.")
 
     # ------------------------------------------------------------------ run
     def train(self):
@@ -663,7 +717,10 @@ def main(argv=None):
     signal.signal(signal.SIGINT, _request_stop)
     signal.signal(signal.SIGTERM, _request_stop)
     try:
-        Trainer(run).train()
+        if run.get("sample_lora"):
+            Trainer(run).sample_lora(run["sample_lora"])
+        else:
+            Trainer(run).train()
     except StopTraining:
         log("Stopped before training started; cached data is kept for the next run.")
     return 0

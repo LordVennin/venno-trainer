@@ -175,8 +175,9 @@
         timestep: "moss_report", clean_end_share: "60:7:30:8:3", flow_shift: 5.0, output_name: "my_moss_lora",
         weight_decay: 0.0001, cache_te: true, ema_decay: 0.98,
       },
-      // all 42 blocks: block 22 is only skipped by the sampler's skip-layer
-      // guidance on the negative branch, and AI-Toolkit trains it too
+      // all 42 blocks, as Fizgig trains them. The sampler skips block 22 on the
+      // CFG negative branch, so a LoRA's block-22 change is amplified by CFG;
+      // "layers.22." leaves it out (Samples tab: compare from a saved LoRA)
       network: { dim: 32, alpha: 32, ignore_layers: "" },
       dataset: { resolutions: "512, 768, 1024", batch_sizes: "1" },
       sampling: { width: 1024, height: 1024, steps: 30, cfg: 3.0, shift: 5.0, every_steps: 250 },
@@ -253,13 +254,6 @@
       issues.push({ level: "error", msg: "Set an output name." });
     }
     const t = job.training;
-    const ignore = String(job.network.ignore_layers || "");
-    if (job.model === "moss_image" && /(^|[\s,])layers\.22\.?($|[\s,])/.test(ignore)) {
-      issues.push({
-        level: "warn",
-        msg: "Block 22 is left out of the LoRA (Skip Layers: layers.22.). Earlier Venno versions did this by mistake: the sampler only skips block 22 on the CFG negative branch, and AI-Toolkit and Fizgig train it. Clear the field to train all 42 blocks.",
-      });
-    }
     if (t.timestep === "moss_report" && job.model !== "moss_image") {
       issues.push({ level: "error", msg: "The MOSS-Image pretraining timesteps are for MOSS-Image jobs only." });
     }

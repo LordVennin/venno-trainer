@@ -367,7 +367,7 @@
                             <label>Skip Layers Containing</label>
                             <input type="text" data-bind="network.ignore_layers" placeholder="e.g. blocks.27. or adaln_modulation">
                             <small data-model="anima">Comma/space separated parts of layer names (blocks.N.self_attn.q_proj, blocks.N.mlp.layer1, …) to leave without LoRA. The default leaves out the adaLN modulation layers (a third of the LoRA, prone to colour and contrast shifts); clear it to train them too.</small>
-                            <small data-model="moss_image">Comma/space separated parts of layer names (layers.N.proj.qkv, layers.N.proj.ffn_down, …) to leave without LoRA. Blank = all 42 blocks, as AI-Toolkit and Fizgig train MOSS-Image.</small>
+                            <small data-model="moss_image">Comma/space separated parts of layer names (layers.N.proj.qkv, layers.N.proj.ffn_down, …) to leave without LoRA. Blank = all 42 blocks, as Fizgig trains MOSS-Image. <code>layers.22.</code> leaves out block 22: the sampler skips it on the CFG negative branch, so a LoRA's block-22 change is multiplied by the CFG scale on every prompt. To see its effect, use Samples → Generate Samples from a Saved LoRA.</small>
                         </div>
                         <div class="form-group">
                             <label>Initialize From LoRA</label>
@@ -453,6 +453,20 @@
                                 <button id="btn-refresh-samples" class="btn btn-ghost btn-sm">🔄 Refresh</button>
                             </div>
                         </div>
+                        <details class="section-card" id="from-lora">
+                            <summary style="cursor:pointer;">Generate Samples from a Saved LoRA</summary>
+                            <p class="hint" style="margin-top:8px;">Makes this job's sample prompts (Prompts tab) with a LoRA from the output folder, without training. Each kind ticked below is one set of images, named after the file and the kind, so you can compare them side by side. The model loads once.</p>
+                            <div class="form-row">
+                                <div class="form-group"><label>LoRA File</label><select id="fl-file"></select></div>
+                            </div>
+                            <div class="checkbox-group" style="margin-bottom:10px;">
+                                <label class="hint inline"><input type="checkbox" id="fl-plain" checked> As trained</label>
+                                <label class="hint inline" data-model="moss_image"><input type="checkbox" id="fl-no22" checked> Without the LoRA's block 22 (as if trained with Skip Layers <code>layers.22.</code>)</label>
+                                <label class="hint inline" data-model="moss_image"><input type="checkbox" id="fl-fullneg"> As trained, with block 22 also run in the CFG negative branch (no skip-layer guidance)</label>
+                            </div>
+                            <button id="fl-run" class="btn btn-primary btn-sm">▶ Generate</button>
+                            <small class="hint" style="display:block;margin-top:6px;">MOSS-Image's sampler skips block 22 on the negative branch, so a LoRA's block-22 change is multiplied by the CFG scale on every prompt. If samples ignore their prompts, compare the first two kinds.</small>
+                        </details>
                         <details class="section-card" id="ckpt-details">
                             <summary style="cursor:pointer;">Checkpoints <span id="ckpt-count" class="chip"></span></summary>
                             <div id="ckpt-list" class="ckpt-list" style="margin-top:10px;"></div>
