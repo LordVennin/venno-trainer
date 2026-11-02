@@ -1197,7 +1197,7 @@ async function pollGPUs() {
         .map(
           (g) => `<span class="hw-gpu">GPU${g.index} <b>${escapeHtml(g.name)}</b>
           VRAM<span class="hw-meter"><i style="width:${(g.memUsed / g.memTotal) * 100}%"></i></span>${(g.memUsed / 1024).toFixed(1)}/${(g.memTotal / 1024).toFixed(1)} GB
-          · ${g.util}% · ${g.temp}°C</span>`,
+          · ${g.util}% · ${g.temp}°C${g.power != null ? ` · ${Math.round(g.power)} W` : ""}</span>`,
         )
         .join("")
     : "<span>No NVIDIA GPU detected (nvidia-smi unavailable)</span>";

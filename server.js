@@ -734,25 +734,32 @@ app.post("/api/system/check-python", h((req, res) => {
   });
 }));
 
+// Power draw comes back "[N/A]" on cards that do not report it (null); a
+// driver that does not know the field fails the query, so it is retried without.
 app.get("/api/system/gpus", h((req, res) => {
-  execFile(
-    "nvidia-smi",
-    ["--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits"],
-    { timeout: 5000 },
-    (err, stdout) => {
-      if (err) return res.json([]);
-      res.json(
-        stdout
-          .trim()
-          .split("\n")
-          .filter(Boolean)
-          .map((l) => {
-            const [index, name, total, used, util, temp] = l.split(",").map((s) => s.trim());
-            return { index: +index, name, memTotal: +total, memUsed: +used, util: +util, temp: +temp };
-          }),
-      );
-    },
-  );
+  const query = (withPower, done) =>
+    execFile(
+      "nvidia-smi",
+      [`--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu${withPower ? ",power.draw" : ""}`, "--format=csv,noheader,nounits"],
+      { timeout: 5000 },
+      done,
+    );
+  const send = (stdout) =>
+    res.json(
+      stdout
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => {
+          const [index, name, total, used, util, temp, power] = l.split(",").map((s) => s.trim());
+          const watts = Number(power);
+          return { index: +index, name, memTotal: +total, memUsed: +used, util: +util, temp: +temp, power: power && Number.isFinite(watts) ? watts : null };
+        }),
+    );
+  query(true, (err, stdout) => {
+    if (!err) return send(stdout);
+    query(false, (err2, stdout2) => (err2 ? res.json([]) : send(stdout2)));
+  });
 }));
 
 // --------------------------------------------------------------- websocket
