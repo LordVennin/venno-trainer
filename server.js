@@ -478,6 +478,14 @@ function armIdleUnload() {
   idleTimer.unref();
 }
 
+// JoyCaption (~17 GB) is unloaded as soon as its work is done, not kept for
+// the idle timeout like the small taggers.
+function unloadWhenDone() {
+  clearTimeout(idleTimer);
+  if (anyRunGoing()) return;
+  taggerService.unload().then(() => broadcastAll({ type: "tagger", data: taggerState() })).catch(() => {});
+}
+
 function anyRunGoing() {
   return (tagRun && tagRun.state.state === "running") || (captionRun && captionRun.state.state === "running");
 }
@@ -581,10 +589,14 @@ app.post("/api/tagger/joycaption", h(async (req, res) => {
     if (!hints.length) hints = captioner.fileHints(cap, C.backupPath(image), c);
   }
   const { prompt, length } = C.buildPrompt(hints, c);
-  const r = await taggerService.caption([image], [prompt], {
-    model: c.model, quant: c.quant, models_dir: native.resolveDirs(getSettings()).models, hf_token: getSettings().hf_token, batch_size: 1, gen: c.gen,
-  });
-  armIdleUnload();
+  let r;
+  try {
+    r = await taggerService.caption([image], [prompt], {
+      model: c.model, quant: c.quant, models_dir: native.resolveDirs(getSettings()).models, hf_token: getSettings().hf_token, batch_size: 1, gen: c.gen,
+    });
+  } finally {
+    unloadWhenDone();
+  }
   broadcastAll({ type: "tagger", data: taggerState() });
   const out = r.results[0];
   if (out.error) return res.status(400).json({ error: out.error });
@@ -609,7 +621,7 @@ app.post("/api/tagger/caption-run", h((req, res) => {
     mode, layout, backup: !!backup, skipConverted: !!skip_converted, preview: Math.max(0, parseInt(preview, 10) || 0),
   });
   captionRun.on("progress", () => broadcastAll({ type: "tagger", data: taggerState() }));
-  captionRun.run().finally(armIdleUnload);
+  captionRun.run().finally(unloadWhenDone);
   res.json({ ok: true, state: taggerState() });
 }));
 

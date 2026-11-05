@@ -183,7 +183,9 @@ JoyCaption needs a GPU: bf16 uses about 17 GB; the **4-bit NF4** load mode about
 falls back to the CPU, so while a training run is going it refuses to start unless its Device is
 set to *GPU, even while training runs*. It shares one model slot with the taggers: loading
 JoyCaption unloads a tagger and the other way round (with tagger hints, a run tags every image
-first, so the models swap once per run), and the idle unload applies to it too.
+first, so the models swap once per run). JoyCaption unloads as soon as a caption, preview or run
+is done, and the tagger process exits with it, so the GPU memory is fully back; each single-image
+caption loads it again.
 
 ## Training, saving, resuming
 
