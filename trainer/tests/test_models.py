@@ -10,7 +10,7 @@ import torch
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
-from venno.models.moss.adapter import moss_sigmas  # noqa: E402
+from venno.models.moss.adapter import MossAdapter, moss_sigmas  # noqa: E402
 from venno.models.moss.transformer import MossImageParams, MossImageTransformer, fuse_split_qkv  # noqa: E402
 
 
@@ -121,6 +121,37 @@ class CheckpointSkipTests(unittest.TestCase):
         run().pow(2).mean().backward()
         net.remove()
         return [p.grad.clone() for p in net.parameters()]
+
+    def test_moss_batch_with_different_caption_lengths_runs_unpadded(self):
+        """Captions of different lengths: picture by picture, each unpadded, with the padded batch's predictions and
+        LoRA gradients (the padded batch masks the padding out of every attention)."""
+        torch.manual_seed(0)
+        m = MossImageTransformer(MossImageParams(dim=64, ffn_dim=96, num_heads=4, num_layers=3, text_dim=32, freq_dim=32))
+        x, sig = torch.randn(3, 128, 3, 4), torch.tensor([0.2, 0.5, 0.9])
+        lengths = [5, 2, 4]
+        embeds = torch.zeros(3, 5, 32)
+        for i, n in enumerate(lengths):
+            embeds[i, :n] = torch.randn(n, 32)
+        text = {"embeds": embeds, "mask": torch.arange(5)[None] < torch.tensor(lengths)[:, None]}
+        adapter = types.SimpleNamespace(dit=m)
+        calls = []
+        orig = m.forward
+        m.forward = lambda *a, **k: (calls.append(a[2].shape[1]), orig(*a, **k))[1]
+        targets = [(f"l{i}", layer.proj["qkv"]) for i, layer in enumerate(m.layers)]
+        split = self.grads(m, lambda: MossAdapter.predict(adapter, x, sig, text), targets)
+        self.assertEqual(calls, lengths, "one forward per picture at its own caption length")
+        padded = self.grads(m, lambda: orig(x, sig * 1000, embeds, text["mask"]), targets)
+        for a, b in zip(split, padded):
+            self.assertTrue(torch.allclose(a, b, atol=1e-5), (a - b).abs().max())
+        with torch.no_grad():
+            same = MossAdapter.predict(adapter, x, sig, text)
+            ref = orig(x, sig * 1000, embeds, text["mask"])
+        self.assertTrue(torch.allclose(same, ref, atol=1e-5))
+        calls.clear()
+        even = {"embeds": embeds, "mask": torch.ones(3, 5, dtype=torch.bool)}
+        with torch.no_grad():
+            MossAdapter.predict(adapter, x, sig, even)
+        self.assertEqual(calls, [5], "equal lengths stay one batched forward")
 
     def test_moss(self):
         torch.manual_seed(0)

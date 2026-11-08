@@ -307,7 +307,17 @@ class MossAdapter(base.ModelAdapter):
         return len(blocks)
 
     def predict(self, noisy, sigmas, text):
-        return self.dit(noisy, sigmas * NUM_TRAIN_TIMESTEPS, text["embeds"], text["mask"])
+        """A batch whose captions differ in length runs picture by picture, each at its own caption length (one
+        backward still covers the batch). Padded together, the captions need an attention mask, which sends every
+        attention to PyTorch's slower memory-efficient kernel, and every picture pays for the longest caption.
+        Fizgig (#221) and OneTrainer train MOSS-Image this way; each picture's result is its batch-1 result."""
+        mask = text["mask"]
+        lengths = mask.sum(1).tolist()
+        t = sigmas * NUM_TRAIN_TIMESTEPS
+        if len(set(lengths)) == 1:
+            return self.dit(noisy, t, text["embeds"], mask)
+        return torch.cat([self.dit(noisy[i:i + 1], t[i:i + 1], text["embeds"][i:i + 1, :n], mask[i:i + 1, :n])
+                          for i, n in enumerate(lengths)])
 
     @torch.no_grad()
     def sample(self, cond, uncond, width, height, steps, cfg, seed, shift, uncond_skip=UNCOND_SKIP_LAYERS):
