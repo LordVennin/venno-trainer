@@ -891,12 +891,88 @@ function renderSamples() {
   $("btn-delete-samples").classList.toggle("hidden", selectedSamples.size === 0);
 }
 
+// The "parameters" text a sample PNG carries (written by the trainer,
+// A1111's layout), from its tEXt or uncompressed iTXt chunk; null if none.
+function pngParameters(buf) {
+  const b = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  if (b.length < 8 || b[1] !== 0x50 || b[2] !== 0x4e || b[3] !== 0x47) return null;
+  const latin1 = new TextDecoder("latin1");
+  const utf8 = new TextDecoder("utf-8");
+  for (let p = 8; p + 8 <= b.length; ) {
+    const len = dv.getUint32(p);
+    const type = latin1.decode(b.subarray(p + 4, p + 8));
+    const data = b.subarray(p + 8, p + 8 + len);
+    if (type === "IEND") break;
+    const nul = data.indexOf(0);
+    if (nul > 0 && latin1.decode(data.subarray(0, nul)) === "parameters") {
+      if (type === "tEXt") return latin1.decode(data.subarray(nul + 1));
+      // iTXt: keyword\0, compression flag, method, language\0, translated keyword\0, text
+      if (type === "iTXt" && data[nul + 1] === 0) {
+        let q = data.indexOf(0, nul + 3);
+        q = data.indexOf(0, q + 1);
+        return utf8.decode(data.subarray(q + 1));
+      }
+    }
+    p += 12 + len;
+  }
+  return null;
+}
+
+// "prompt\nNegative prompt: …\nSteps: 30, CFG scale: 3, …" -> {prompt, negative, settings: [[key, value]]}
+function parseParameters(text) {
+  const lines = String(text).split("\n");
+  const last = lines.length > 1 && /^Steps: /.test(lines[lines.length - 1]) ? lines.pop() : "";
+  const neg = lines.findIndex((l) => l.startsWith("Negative prompt: "));
+  const prompt = (neg >= 0 ? lines.slice(0, neg) : lines).join("\n").trim();
+  const negative = neg >= 0 ? lines.slice(neg).join("\n").slice("Negative prompt: ".length).trim() : "";
+  const settings = last
+    .split(/,\s*(?=[A-Za-z][A-Za-z ]*: )/)
+    .map((kv) => kv.split(/: (.*)/s).slice(0, 2))
+    .filter((kv) => kv.length === 2);
+  return { prompt, negative, settings };
+}
+
+function lightboxInfo(name, params) {
+  if (!params) return `<div class="lb-name">${escapeHtml(name)}</div><p class="hint">No prompt or settings stored in this image.</p>`;
+  const p = parseParameters(params);
+  return `<div class="lb-name">${escapeHtml(name)}</div>
+    <div class="lb-label">Prompt <button class="btn btn-xs lb-copy" data-copy="prompt">Copy</button></div>
+    <div class="lb-text">${escapeHtml(p.prompt) || '<span class="hint">(empty)</span>'}</div>
+    <div class="lb-label">Negative prompt</div>
+    <div class="lb-text">${escapeHtml(p.negative) || '<span class="hint">(none)</span>'}</div>
+    ${p.settings.length ? `<dl class="lb-settings">${p.settings.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join("")}</dl>` : ""}`;
+}
+
 function openLightbox(list, idx) {
   const lb = document.createElement("div");
   lb.className = "lightbox";
-  const show = () => {
+  let shown = 0;
+  const show = async () => {
     const img = list[idx];
-    lb.innerHTML = `<img src="/api/jobs/${encodeURIComponent(currentJob)}/file?rel=${encodeURIComponent(img.rel)}"><div class="lb-cap">${escapeHtml(img.name)} · ${idx + 1}/${list.length} · ← → to browse, Esc to close</div>`;
+    const n = ++shown;
+    const src = `/api/jobs/${encodeURIComponent(currentJob)}/file?rel=${encodeURIComponent(img.rel)}`;
+    lb.innerHTML = `<div class="lb-main"><img src="${src}"><aside class="lb-info"><div class="lb-name">${escapeHtml(img.name)}</div></aside></div>
+      <div class="lb-cap">${idx + 1}/${list.length} · ← → to browse, Esc or click outside to close</div>`;
+    let params = null;
+    try {
+      params = pngParameters(await (await fetch(src)).arrayBuffer());
+    } catch (e) {
+      /* not a PNG, or gone */
+    }
+    if (n !== shown) return; // browsed on meanwhile
+    const info = lb.querySelector(".lb-info");
+    info.innerHTML = lightboxInfo(img.name, params);
+    info.onclick = (e) => e.stopPropagation(); // select and copy text without closing
+    const copy = info.querySelector(".lb-copy");
+    if (copy) {
+      copy.onclick = () => {
+        navigator.clipboard.writeText(parseParameters(params).prompt).then(
+          () => showToast("Prompt copied"),
+          () => showToast("Could not copy"),
+        );
+      };
+    }
   };
   const onKey = (e) => {
     if (e.key === "ArrowRight") idx = Math.min(list.length - 1, idx + 1);
