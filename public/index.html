@@ -111,6 +111,11 @@
                                 <label>Restart Cycles</label>
                                 <input type="number" data-bind="training.lr_cycles" min="1">
                             </div>
+                            <div class="form-group" data-show="training.lr_scheduler=cosine_settle">
+                                <label>First Cycle Epochs</label>
+                                <input type="number" data-bind="training.settle_first_epochs" min="1">
+                                <small>One full cosine over these epochs, then each later epoch k settles from a lower peak (the last 1/k of a cosine over k epochs) to near 0, so every saved epoch is settled. Max Epochs only sets where to stop: raise it and resume to train on. The same curve as resuming one epoch at a time with Max Epochs raised by 1.</small>
+                            </div>
                         </div>
                         <div class="form-row">
                             <div class="form-group">

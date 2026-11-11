@@ -134,3 +134,16 @@ test("caption mix: blank or three tags:caption:both weights", () => {
   assert.strictEqual(issue.level, "error");
   assert.match(issue.msg, /Caption mix "25:75" \(fox\)/);
 });
+
+test("cosine, then settling epochs: the first cycle must be whole epochs; Max Epochs inside it is warned", () => {
+  const folders = [{ ...S.defaultFolder(), path: "/d" }];
+  const job = (t) => S.normalizeJob({ model: "moss_image", training: { lr_scheduler: "cosine_settle", duration_unit: "epochs", ...t }, dataset: { folders } });
+  assert.strictEqual(S.defaultJob("moss_image").training.settle_first_epochs, 4);
+  assert.ok(S.OPTIONS.lr_scheduler.some((o) => Array.isArray(o) && o[0] === "cosine_settle"));
+  assert.deepStrictEqual(S.validateJob(job({ settle_first_epochs: 4, max_epochs: 20 })), []);
+  assert.match(S.validateJob(job({ settle_first_epochs: 0 }))[0].msg, /First Cycle Epochs must be a whole number/);
+  const short = S.validateJob(job({ settle_first_epochs: 4, max_epochs: 2 }));
+  assert.strictEqual(short[0].level, "warn");
+  assert.match(short[0].msg, /ends inside the first cycle/);
+});
+

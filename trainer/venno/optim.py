@@ -54,9 +54,15 @@ def create_optimizer(name, params, lr, weight_decay, extra_args=""):
     raise ValueError(f"Unknown optimizer {name}; choose one of {', '.join(OPTIMIZERS)}")
 
 
-def create_scheduler(name, optimizer, total_steps, warmup_steps=0, cycles=1, power=1.0):
+def create_scheduler(name, optimizer, total_steps, warmup_steps=0, cycles=1, power=1.0, settle_from=4, steps_per_epoch=1):
+    """cosine_settle: one cosine over the first `settle_from` epochs, then each later epoch k (1-based) runs the last
+    1/k of a cosine over k epochs - exactly what resuming one epoch at a time with Max Epochs raised to k gives. Every
+    epoch ends near 0 (each saved epoch is settled), the peaks fall about as 1/k^2, and Max Epochs only says where to
+    stop, so it can be raised later without changing the curve."""
     total_steps = max(1, int(total_steps))
     warmup = max(0, int(warmup_steps))
+    spe = max(1, int(steps_per_epoch))
+    first = max(1, int(settle_from)) * spe
 
     def warm(step):
         return (step + 1) / (warmup + 1) if step < warmup else None
@@ -67,6 +73,9 @@ def create_scheduler(name, optimizer, total_steps, warmup_steps=0, cycles=1, pow
         w = warm(step)
         if w is not None:
             return w
+        if name == "cosine_settle":
+            end = first if step < first else (step // spe + 1) * spe
+            return 0.5 * (1.0 + math.cos(math.pi * min(1.0, (step - warmup) / max(1, end - warmup))))
         progress = (step - warmup) / max(1, total_steps - warmup)
         progress = min(1.0, max(0.0, progress))
         if name == "constant_with_warmup":

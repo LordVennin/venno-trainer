@@ -312,6 +312,7 @@ class Trainer:
         self.scheduler = create_scheduler(
             self.t.get("lr_scheduler", "constant"), self.optimizer, self.total_steps,
             intv(self.t.get("lr_warmup_steps"), 0), intv(self.t.get("lr_cycles"), 1),
+            settle_from=intv(self.t.get("settle_first_epochs"), 4), steps_per_epoch=self.steps_per_epoch,
         )
         decay = num(self.t.get("ema_decay"), 0.0)
         self.ema = EMAWeights(params, decay) if 0 < decay < 1 else None

@@ -193,6 +193,12 @@ caption loads it again.
   warmup / cosine / cosine-with-restarts / linear / polynomial schedules, gradient accumulation,
   logit-normal or uniform timesteps with a flow shift (Anima's default: logit-normal, shift 3, as in
   the Anima trainer).
+- **Cosine, then settling epochs** (LR scheduler): one full cosine over the *First Cycle Epochs*
+  (default 4), then each later epoch k runs the last 1/k of a cosine over k epochs: it starts from a
+  lower peak (about 1/k² of the base rate) and settles to near 0, so every saved epoch is settled.
+  Max Epochs only sets where to stop, so raise it and resume to train on. It is exactly the curve of
+  resuming one epoch at a time with cosine and Max Epochs raised by 1, without the manual step: most
+  learning happens in the first cycle, then many gentle epochs refine it.
 - **MOSS-Image timesteps** come from its technical report (the final pretraining stage), moved by
   a **Clean-end share**: the share of steps at the clean end (noise below 50%), where detail and
   identity are learned. The default is Fizgig's "Slide", `60:7:30:8:3`: 60% until epoch 7, 30% at

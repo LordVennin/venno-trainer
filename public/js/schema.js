@@ -43,7 +43,7 @@
   // [value, label] lists for <select data-options="x">.
   const OPTIONS = {
     optimizer: ["AdamW8bit", "AdamW", "Adafactor", "Prodigy", "PagedAdamW8bit"],
-    lr_scheduler: ["constant", "constant_with_warmup", "cosine", "cosine_with_restarts", "linear", "polynomial"],
+    lr_scheduler: ["constant", "constant_with_warmup", "cosine", ["cosine_settle", "cosine, then settling epochs"], "cosine_with_restarts", "linear", "polynomial"],
     timestep: [["logit_normal", "Logit normal"], ["uniform", "Uniform"], ["moss_report", "MOSS-Image pretraining (technical report)"]],
     mixed_precision: [["bf16", "BFloat16"], ["fp32", "Float32 (slow, testing)"]],
     save_precision: [["bf16", "BFloat16"], ["fp16", "Float16"], ["fp32", "Float32"]],
@@ -81,6 +81,7 @@
         lr_scheduler: "cosine",
         lr_warmup_steps: 0,
         lr_cycles: 1,
+        settle_first_epochs: 4, // cosine_settle: epochs in the first full cosine
         seed: 42,
         duration_unit: "epochs",
         max_epochs: 15,
@@ -265,6 +266,13 @@
         level: "warn",
         msg: "This job uses AI-Toolkit's shift-5 uniform timesteps (about 17% of steps at the clean end). MOSS-Image's own pretraining timesteps with a Clean-end share are now the default (Training → Timesteps).",
       });
+    }
+    if (t.lr_scheduler === "cosine_settle") {
+      const first = Number(t.settle_first_epochs);
+      if (!(Number.isInteger(first) && first >= 1)) issues.push({ level: "error", msg: "First Cycle Epochs must be a whole number of epochs, 1 or more." });
+      else if (t.duration_unit !== "steps" && Number(t.max_epochs) < first) {
+        issues.push({ level: "warn", msg: `Max Epochs (${t.max_epochs}) ends inside the first cycle (${first} epochs): the last save is mid-curve, at a high learning rate. Resume with more epochs to finish it.` });
+      }
     }
     const ema = Number(t.ema_decay);
     if (ema && !(ema > 0 && ema < 1)) issues.push({ level: "error", msg: "EMA decay must be between 0 and 1 (0 = off)." });

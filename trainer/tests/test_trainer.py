@@ -4,6 +4,7 @@
 """
 
 import json
+import math
 import os
 import random
 import shutil
@@ -336,6 +337,35 @@ class MossTests(unittest.TestCase):
         trainer.set_epoch(1)
         s = trainer.sample_sigmas(20000, g)
         self.assertAlmostEqual(float((s < 0.5).float().mean()), 0.30, delta=0.02)
+
+    def test_cosine_settle_schedule_in_a_run(self):
+        out = os.path.join(self.tmp, "out_settle")
+        job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}],
+                         duration_unit="epochs", max_epochs=3, save_every_epochs=10, optimizer="AdamW", lr="1e-3",
+                         output_name="moss_settle", workers=1, lr_scheduler="cosine_settle", settle_first_epochs=2,
+                         ema_decay=0)
+        job["dataset"].update(resolutions="64", batch_sizes="1", min_bucket=32, max_bucket=128, bucket_steps=16)
+        job["network"].update(dim=4, alpha=4)
+        job["sampling"]["enabled"] = False
+        lrs, orig = [], torch.optim.AdamW.step
+
+        def step(opt, *a, **k):
+            lrs.append(opt.param_groups[0]["lr"])
+            return orig(opt, *a, **k)
+
+        torch.optim.AdamW.step = step
+        try:
+            trainer = T.Trainer(run_config(job, self.paths, out, os.path.join(self.tmp, "cache")))
+            T._stop_requested = False
+            trainer.train()
+        finally:
+            torch.optim.AdamW.step = orig
+        spe = trainer.steps_per_epoch
+        self.assertEqual(len(lrs), 3 * spe)
+        cos = lambda s, end: 1e-3 * 0.5 * (1 + math.cos(math.pi * s / end))
+        expect = [cos(s, 2 * spe) for s in range(2 * spe)] + [cos(s, 3 * spe) for s in range(2 * spe, 3 * spe)]
+        for got, want in zip(lrs, expect):
+            self.assertAlmostEqual(got, want, places=12)
 
     def test_samples_from_a_saved_lora(self):
         out = os.path.join(self.tmp, "out_fl")
