@@ -211,7 +211,7 @@
                             <div class="form-group" data-show="training.gradient_checkpointing">
                                 <label>Blocks Without Checkpointing</label>
                                 <input type="number" data-bind="training.ckpt_skip_blocks" min="0" max="64">
-                                <small>Spends spare VRAM on speed: these blocks keep their activations instead of recomputing them. Raise it while the console's peak VRAM stays under ~22 GB.</small>
+                                <small>Spends spare VRAM on speed: these blocks keep their activations instead of recomputing them. Raise it a few at a time while the console's <i>Memory check</i> peak stays about 1 GB below the card's total (it includes your desktop and other programs); a setting that cannot fit stops at the check.</small>
                             </div>
                         </div>
                         <div class="form-row">
