@@ -49,6 +49,13 @@ class StopTraining(Exception):
     pass
 
 
+class GpuMemoryError(Exception):
+    """Out of GPU memory, with what to do about it (the message is the whole report)."""
+
+
+GIB = 2 ** 30
+
+
 def _request_stop(signum, frame):
     global _stop_requested
     if not _stop_requested:
@@ -126,6 +133,7 @@ class Trainer:
         self.live_text = self.adapter.supports_live_text and not self.t.get("cache_te", True)
         self.variants = max(1, intv(self.t.get("te_variants"), 8))
         self._choices = {}
+        self._others = None  # GPU memory used outside this run's PyTorch pool (other programs, CUDA context)
         self.epoch_rng = None  # the shuffle state the current epoch's image order came from
         self.resume_epoch_rng = None  # from a state saved mid-epoch
 
@@ -385,9 +393,94 @@ class Trainer:
                 yield loaded
 
     def vram_note(self):
+        """The GPU's peak use in GiB as nvidia-smi and PyTorch's errors count it: this run's peak reserved memory
+        plus what other programs, the desktop and the CUDA context use (measured once, see measure_others)."""
         if self.device.type != "cuda":
             return None
-        return torch.cuda.max_memory_allocated() / 1e9
+        if self._others is None:
+            self.measure_others()
+        return (self._others + torch.cuda.max_memory_reserved()) / GIB
+
+    def measure_others(self):
+        free, total = torch.cuda.mem_get_info()
+        self._others = max(0, total - free - torch.cuda.memory_reserved())
+
+    def largest_batch(self):
+        """(resolution index, bucket, items) of the batch that needs the most memory: the largest bucket area times
+        the batch size, filled with the images whose captions are longest."""
+        best = None
+        for ri in range(len(self.resolutions)):
+            bs = self.batch_sizes[ri] if ri < len(self.batch_sizes) else self.batch_sizes[-1]
+            by_bucket = {}
+            for item in self.items:
+                by_bucket.setdefault(item.buckets[ri], []).append(item)
+            for bucket, items in by_bucket.items():
+                n = min(bs, len(items))
+                if best is None or bucket[0] * bucket[1] * n > best[0]:
+                    best = (bucket[0] * bucket[1] * n, ri, bucket, items, n)
+        _, ri, bucket, items, n = best
+        longest = {id(i): max((t for _, ts in self.caption_choices(i) for t in ts), key=len) for i in items}
+        items = sorted(items, key=lambda i: len(longest[id(i)]), reverse=True)[:n]
+        return ri, bucket, items, [longest[id(i)] for i in items]
+
+    def check_memory(self):
+        """One forward and backward on the run's largest batch before training (its first compile included), so a
+        run that cannot fit stops now with a clear message instead of hours in. The LoRA, the optimizer, EMA and
+        the training's random state are left as they were."""
+        if self.device.type != "cuda" and not os.environ.get("VENNO_MEMORY_CHECK"):
+            return
+        ri, bucket, items, texts = self.largest_batch()
+        x = torch.stack([self.latents.load(i.image, bucket, False) for i in items]).to(self.device, torch.float32)
+        conds = self.adapter.encode_text(texts) if self.live_text else [self.texts.load(t) for t in texts]
+        text = self.adapter.collate_text(conds)
+        weights = torch.ones(len(items), device=self.device)
+        cpu_rng = torch.get_rng_state()
+        cuda_rng = torch.cuda.get_rng_state_all() if self.device.type == "cuda" else None
+        what = f"{bucket[0]}x{bucket[1]}, {len(items)} image(s), longest captions"
+        if self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats()
+        oom = False
+        try:
+            self.train_step(x, text, weights, torch.Generator("cpu").manual_seed(0)).backward()
+        except torch.cuda.OutOfMemoryError:
+            oom = True
+        finally:
+            self.optimizer.zero_grad(set_to_none=True)
+            torch.set_rng_state(cpu_rng)
+            if cuda_rng is not None:
+                torch.cuda.set_rng_state_all(cuda_rng)
+        x = text = conds = None
+        if self.device.type != "cuda":
+            log(f"Memory check: the largest batch ({what}) ran")
+            return
+        total = torch.cuda.mem_get_info()[1] / GIB
+        others = (self._others or 0) / GIB
+        if oom:
+            free_memory()
+            raise GpuMemoryError(
+                f"Out of GPU memory on the largest batch ({what}), before training started. Lower 'Blocks Without "
+                f"Checkpointing' (or the batch size or resolution), or close programs using the GPU: they and the "
+                f"CUDA context use {others:.1f} of its {total:.1f} GB.")
+        peak = self.vram_note()
+        log(f"Memory check, largest batch ({what}): peak {peak:.1f} of {total:.1f} GB, including {others:.1f} GB "
+            "used by other programs and the CUDA context")
+        if peak > total - 0.75:
+            log("  Within 0.75 GB of the limit: other programs needing more GPU memory later (a browser, a game) "
+                "could run training out of memory. Lowering 'Blocks Without Checkpointing' by one leaves room.")
+        torch.cuda.reset_peak_memory_stats()
+
+    def stop_out_of_memory(self, step, epoch, rng, rng_t, samples):
+        """Out of GPU memory mid-run: save the state of the last finished step, then stop with what to do."""
+        free_memory()
+        self.save_state(f"step{step:08d}", step, epoch, rng, rng_t)
+        self.save_lora(os.path.join(self.output_dir, f"{self.name}-step{step:08d}.safetensors"))
+        bucket = samples[0].bucket if samples else ("?", "?")
+        others = (self._others or 0) / GIB
+        raise GpuMemoryError(
+            f"Out of GPU memory at step {step + 1}, on a {bucket[0]}x{bucket[1]} batch of {len(samples)}. The training "
+            f"state was saved at step {step}, so nothing is lost: lower 'Blocks Without Checkpointing' (or close "
+            f"programs using the GPU: they and the CUDA context used {others:.1f} GB) and resume. Resuming retries "
+            "this batch.")
 
     def load_batch(self, samples, epoch, rng):
         latents, conds, weights = [], [], []
@@ -640,9 +733,9 @@ class Trainer:
 
         self.adapter.dit.train()
         self.network.train()
-        start_step = step
         if self.device.type == "cuda":
-            torch.cuda.reset_peak_memory_stats()
+            self.measure_others()
+        self.check_memory()
         progress = Progress(self.total_steps, start=step)
         recent = []
         epoch = start_epoch
@@ -669,12 +762,22 @@ class Trainer:
             skip = (step - epoch * self.steps_per_epoch) * self.accum if mid_epoch else 0
             batches = batches[skip:]
             groups = self.iter_groups(batches, epoch, rng)
-            for group in groups:
+            for gi, group in enumerate(groups):
                 total_loss = 0.0
-                for x, text, weights in group:
-                    loss = self.train_step(x, text, weights, rng_t) / len(group)
-                    loss.backward()
-                    total_loss += loss.detach().item()
+                oom = False
+                try:
+                    for x, text, weights in group:
+                        loss = self.train_step(x, text, weights, rng_t) / len(group)
+                        loss.backward()
+                        total_loss += loss.detach().item()
+                except torch.cuda.OutOfMemoryError:
+                    oom = True
+                if oom:  # outside the except block, so its traceback no longer holds the step's tensors
+                    group = x = text = weights = loss = None
+                    groups.close()
+                    self.optimizer.zero_grad(set_to_none=True)
+                    self.stop_out_of_memory(step, epoch, rng, rng_t,
+                                            [s for b in batches[gi * self.accum:(gi + 1) * self.accum] for s in b])
                 if not math.isfinite(total_loss):
                     raise RuntimeError(f"Loss became {total_loss} at step {step + 1}; lower the learning rate.")
                 if max_norm > 0:
@@ -695,9 +798,6 @@ class Trainer:
                 step += 1
                 recent = (recent + [total_loss])[-50:]
                 progress.update(step, sum(recent) / len(recent), self.vram_note())
-                if step == start_step + 2 and self.device.type == "cuda":
-                    total = torch.cuda.get_device_properties(0).total_memory / 1e9
-                    log(f"Peak VRAM while training: {self.vram_note():.1f} of {total:.1f} GB")
 
                 if not by_epochs:
                     if step % save_every == 0 and step < self.total_steps:
@@ -752,6 +852,9 @@ def main(argv=None):
             Trainer(run).train()
     except StopTraining:
         log("Stopped before training started; cached data is kept for the next run.")
+    except GpuMemoryError as e:
+        log(str(e))
+        return 1
     return 0
 
 

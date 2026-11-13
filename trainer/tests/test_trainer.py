@@ -10,6 +10,7 @@ import random
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 
 import numpy as np
@@ -103,6 +104,18 @@ class DataTests(unittest.TestCase):
         only = D.Folder(path="x", caption_mix=D.parse_mix("0:50:50"))
         self.assertEqual([k for k, _ in D.caption_kinds(D.Item("b.png", "fox", only, prose="A fox."))], ["prose", "both"])
         self.assertEqual(D.join_lines("fox, solo.", "A fox."), "fox, solo. A fox.")
+
+    def test_memory_check_picks_the_largest_batch_with_the_longest_captions(self):
+        f = D.Folder(path="x")
+        items = [D.Item(f"i{k}.png", "fox" + ", tag" * k, f) for k in range(5)]
+        for k, it in enumerate(items):  # two buckets at resolution 0, one big one at resolution 1
+            it.buckets = {0: (512, 512) if k < 3 else (640, 384), 1: (1024, 1024)}
+        tr = types.SimpleNamespace(resolutions=[512, 1024], batch_sizes=[4, 2], items=items,
+                                   caption_choices=lambda i: D.caption_choices(i, 1, 0))
+        ri, bucket, chosen, texts = T.Trainer.largest_batch(tr)
+        self.assertEqual((ri, bucket), (1, (1024, 1024)), "1024x1024 at batch 2 needs more than 512x512 at batch 4")
+        self.assertEqual([i.image for i in chosen], ["i4.png", "i3.png"])
+        self.assertEqual(texts[0], "fox, tag, tag, tag, tag")
 
     def test_dropout_every_n_epochs(self):
         # sd-scripts counts epochs from 1: N=3 drops captions on epochs 3, 6, ...
@@ -408,6 +421,91 @@ class MossTests(unittest.TestCase):
         self.assertEqual(len(before), 11)
         self.assertEqual(before + after, straight, "the resumed epoch trains exactly the images it had not reached")
         self.assertEqual(sorted(straight[8:]), sorted(straight[:8]), "each epoch trains every image once")
+
+    def _order_run(self, out, data, cache, stop_after=None, oom_at=None, resume=False, memory_check=False):
+        """Train 2 epochs of `data` (batch 1); returns the images trained, in order, and the run's exit code."""
+        job = F.base_job("moss_image", [{"path": data}], duration_unit="epochs", max_epochs=2, save_every_epochs=10,
+                         optimizer="AdamW", lr="1e-3", output_name="order", workers=1, ema_decay=0)
+        job["dataset"].update(resolutions="64", batch_sizes="1", min_bucket=32, max_bucket=128, bucket_steps=16)
+        job["network"].update(dim=4, alpha=4, auto_resume=resume)
+        job["sampling"]["enabled"] = False
+        seen, steps, calls = [], [0], [0]
+        orig_load, orig_step, orig_train = T.Trainer.load_batch, torch.optim.AdamW.step, T.Trainer.train_step
+
+        def load(tr, samples, *a):
+            seen.append(os.path.basename(samples[0].item.image))
+            return orig_load(tr, samples, *a)
+
+        def step(opt, *a, **k):
+            steps[0] += 1
+            if stop_after and steps[0] == stop_after:
+                T._stop_requested = True
+            return orig_step(opt, *a, **k)
+
+        def train_step(tr, *a):
+            calls[0] += 1
+            if oom_at and calls[0] == oom_at:
+                raise torch.cuda.OutOfMemoryError("CUDA out of memory (test)")
+            return orig_train(tr, *a)
+
+        path = os.path.join(self.tmp, f"run_{os.path.basename(out)}.json")
+        with open(path, "w") as f:
+            json.dump(run_config(job, self.paths, out, cache), f)
+        T.Trainer.load_batch, torch.optim.AdamW.step, T.Trainer.train_step = load, step, train_step
+        env = os.environ.pop("VENNO_MEMORY_CHECK", None)
+        if memory_check:
+            os.environ["VENNO_MEMORY_CHECK"] = "1"
+        try:
+            T._stop_requested = False
+            code = T.main([path])
+        finally:
+            T.Trainer.load_batch, torch.optim.AdamW.step, T.Trainer.train_step = orig_load, orig_step, orig_train
+            T._stop_requested = False
+            os.environ.pop("VENNO_MEMORY_CHECK", None)
+            if env is not None:
+                os.environ["VENNO_MEMORY_CHECK"] = env
+        return seen[:steps[0]], code
+
+    def test_out_of_memory_mid_run_saves_and_resumes_exactly(self):
+        data = os.path.join(self.tmp, "data", "oom")
+        F.make_images(data, 8, caption=lambda i: f"A photo of object {i}.")
+        cache = os.path.join(self.tmp, "cache_oom")
+        straight, code = self._order_run(os.path.join(self.tmp, "out_oom_a"), data, cache)
+        self.assertEqual((len(straight), code), (16, 0))
+        out = os.path.join(self.tmp, "out_oom_b")
+        lines, orig_log = [], T.log
+        T.log = lambda *a: (lines.append(" ".join(map(str, a))), orig_log(*a))
+        try:
+            before, code = self._order_run(out, data, cache, oom_at=12)  # the 12th step runs out of memory
+        finally:
+            T.log = orig_log
+        self.assertEqual((len(before), code), (11, 1))
+        self.assertTrue(os.path.isdir(os.path.join(out, "order-step00000011-state")))
+        self.assertTrue(os.path.isfile(os.path.join(out, "order-step00000011.safetensors")))
+        msg = [l for l in lines if l.startswith("Out of GPU memory at step 12")]
+        self.assertEqual(len(msg), 1, lines[-5:])
+        self.assertIn("saved at step 11", msg[0])
+        after, code = self._order_run(out, data, cache, resume=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(before + after, straight, "the resume retries the batch and continues the epoch exactly")
+
+    def test_memory_check_changes_nothing(self):
+        data = os.path.join(self.tmp, "data", "memcheck")
+        F.make_images(data, 4, caption=lambda i: f"A photo of object {i}" + ", with a longer caption" * i + ".")
+        cache = os.path.join(self.tmp, "cache_memcheck")
+        lines, orig_log = [], T.log
+        T.log = lambda *a: (lines.append(" ".join(map(str, a))), orig_log(*a))
+        try:
+            plain, _ = self._order_run(os.path.join(self.tmp, "out_mc_a"), data, cache)
+            checked, _ = self._order_run(os.path.join(self.tmp, "out_mc_b"), data, cache, memory_check=True)
+        finally:
+            T.log = orig_log
+        self.assertEqual(plain, checked)
+        a = load_file(os.path.join(self.tmp, "out_mc_a", "order.safetensors"))
+        b = load_file(os.path.join(self.tmp, "out_mc_b", "order.safetensors"))
+        for k in a:
+            self.assertTrue(torch.equal(a[k], b[k]), k)
+        self.assertTrue(any(l.startswith("Memory check: the largest batch (") for l in lines), lines)
 
     def test_samples_from_a_saved_lora(self):
         out = os.path.join(self.tmp, "out_fl")

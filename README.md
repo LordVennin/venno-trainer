@@ -62,12 +62,22 @@ Always on: content-keyed caches (each dataset is encoded once per model), bf16 w
 flash-attention kernels, TF32 for the fp32 parts (MOSS VAE), cuDNN autotuning for VAE caching,
 length-sorted caption encoding (MOSS encodes equal-length captions in one batch instead of one at
 a time), the next batch loaded in the background while the GPU trains, fused AdamW and an
-allocator setting that avoids fragmentation OOMs. The console shows peak VRAM, and the progress
-area tells you when VRAM is going unused.
+allocator setting that avoids fragmentation OOMs. The progress area shows the GPU's peak memory use
+the way `nvidia-smi` counts it: this run's peak plus what the desktop and other programs use, in
+GiB. It also tells you when VRAM is going unused.
+
+- **Memory check before training**: one forward and backward on the run's largest batch (largest
+  bucket area times its batch size, filled with the longest captions), so a setting that cannot
+  fit stops at once with what to change, not hours in on a rare large bucket. It logs the peak,
+  and warns within 0.75 GB of the limit. The LoRA, the optimizer and the training's random state
+  are untouched by it.
+- **Out of memory mid-run anyway** (say another program took GPU memory): the training state of the
+  last finished step is saved before stopping, so resuming loses nothing and retries that batch.
 
 Options to try, in this order:
-1. **Blocks Without Checkpointing**: skips recomputing the last N blocks. Raise it until the peak
-   VRAM shown in the console is around 21–22 GB. Anima, with its small DiT, has the most room.
+1. **Blocks Without Checkpointing**: skips recomputing the last N blocks. Raise it a few at a time
+   while the memory check's peak stays about 1 GB below the card's total (it already includes
+   your desktop's use). Anima, with its small DiT, has the most room.
 2. **Batch size**: larger batches use the GPU better, if VRAM allows.
 3. **torch.compile** (experimental): compiles the transformer blocks. The first step at each new
    bucket shape is slow, the rest are faster. It falls back to normal mode if compiling fails.
