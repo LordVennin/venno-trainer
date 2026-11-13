@@ -147,3 +147,14 @@ test("cosine, then settling epochs: the first cycle must be whole epochs; Max Ep
   assert.match(short[0].msg, /ends inside the first cycle/);
 });
 
+test("training runs keep Triton's FP fusion on (its default changes in Triton 3.10)", () => {
+  const job = S.normalizeJob({ model: "moss_image", dataset: { folders: [{ ...S.defaultFolder(), path: "/d" }] } });
+  const saved = process.env.TRITON_DEFAULT_FP_FUSION;
+  delete process.env.TRITON_DEFAULT_FP_FUSION;
+  assert.strictEqual(native.buildRun(job, {}, "/tmp/venno_job").env.TRITON_DEFAULT_FP_FUSION, "1");
+  process.env.TRITON_DEFAULT_FP_FUSION = "0";
+  assert.strictEqual(native.buildRun(job, {}, "/tmp/venno_job").env.TRITON_DEFAULT_FP_FUSION, undefined, "the user's own value wins");
+  if (saved === undefined) delete process.env.TRITON_DEFAULT_FP_FUSION;
+  else process.env.TRITON_DEFAULT_FP_FUSION = saved;
+});
+
