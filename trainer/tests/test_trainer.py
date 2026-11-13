@@ -367,6 +367,48 @@ class MossTests(unittest.TestCase):
         for got, want in zip(lrs, expect):
             self.assertAlmostEqual(got, want, places=12)
 
+    def test_a_stop_mid_epoch_resumes_with_the_images_the_epoch_had_not_reached(self):
+        data = os.path.join(self.tmp, "data", "order")
+        F.make_images(data, 8, caption=lambda i: f"A photo of object {i}.")
+        cache = os.path.join(self.tmp, "cache_order")
+
+        def run(out, stop_after=None, resume=False):
+            job = F.base_job("moss_image", [{"path": data}], duration_unit="epochs", max_epochs=2, save_every_epochs=10,
+                             optimizer="AdamW", lr="1e-3", output_name="order", workers=1, ema_decay=0)
+            job["dataset"].update(resolutions="64", batch_sizes="1", min_bucket=32, max_bucket=128, bucket_steps=16)
+            job["network"].update(dim=4, alpha=4, auto_resume=resume)
+            job["sampling"]["enabled"] = False
+            seen, steps = [], [0]
+            orig_load, orig_step = T.Trainer.load_batch, torch.optim.AdamW.step
+
+            def load(tr, samples, *a):
+                seen.append(os.path.basename(samples[0].item.image))
+                return orig_load(tr, samples, *a)
+
+            def step(opt, *a, **k):
+                steps[0] += 1
+                if stop_after and steps[0] == stop_after:
+                    T._stop_requested = True
+                return orig_step(opt, *a, **k)
+
+            T.Trainer.load_batch, torch.optim.AdamW.step = load, step
+            try:
+                T._stop_requested = False
+                T.Trainer(run_config(job, self.paths, out, cache)).train()
+            finally:
+                T.Trainer.load_batch, torch.optim.AdamW.step = orig_load, orig_step
+                T._stop_requested = False
+            return seen[:steps[0]]  # a batch loaded ahead but not trained is not seen
+
+        straight = run(os.path.join(self.tmp, "out_order_a"))
+        self.assertEqual(len(straight), 16)
+        out = os.path.join(self.tmp, "out_order_b")
+        before = run(out, stop_after=11)  # three steps into epoch 2
+        after = run(out, resume=True)
+        self.assertEqual(len(before), 11)
+        self.assertEqual(before + after, straight, "the resumed epoch trains exactly the images it had not reached")
+        self.assertEqual(sorted(straight[8:]), sorted(straight[:8]), "each epoch trains every image once")
+
     def test_samples_from_a_saved_lora(self):
         out = os.path.join(self.tmp, "out_fl")
         job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}],

@@ -126,6 +126,8 @@ class Trainer:
         self.live_text = self.adapter.supports_live_text and not self.t.get("cache_te", True)
         self.variants = max(1, intv(self.t.get("te_variants"), 8))
         self._choices = {}
+        self.epoch_rng = None  # the shuffle state the current epoch's image order came from
+        self.resume_epoch_rng = None  # from a state saved mid-epoch
 
     # ------------------------------------------------------------- dataset
     def prepare_dataset(self):
@@ -464,7 +466,7 @@ class Trainer:
         os.makedirs(tmp)
         save_file({k: v.cpu().contiguous() for k, v in self.network.internal_state_dict().items()}, os.path.join(tmp, "lora.safetensors"))
         torch.save({"optimizer": self.optimizer.state_dict(), "scheduler": self.scheduler.state_dict(),
-                    "rng": rng.getstate(), "rng_t": rng_t.get_state(),
+                    "rng": rng.getstate(), "rng_t": rng_t.get_state(), "epoch_rng": self.epoch_rng,
                     "ema": self.ema.state_dict() if self.ema else None}, os.path.join(tmp, "state.pt"))
         with open(os.path.join(tmp, "train_state.json"), "w") as f:
             json.dump({"step": step, "epoch": epoch, "total_steps": self.total_steps, "time": time.time()}, f)
@@ -504,6 +506,7 @@ class Trainer:
             group["initial_lr"] = lr
         rng.setstate(st["rng"])
         rng_t.set_state(st["rng_t"])
+        self.resume_epoch_rng = st.get("epoch_rng")
         if self.ema:
             if st.get("ema"):
                 self.ema.load_state_dict(st["ema"])
@@ -646,9 +649,24 @@ class Trainer:
         params = self.network.trainable_parameters()
         while step < self.total_steps and not _stop_requested:
             self.set_epoch(epoch)
-            batches = D.epoch_batches(self.items, self.batch_sizes, len(self.resolutions), rng)
+            mid_epoch = step > epoch * self.steps_per_epoch
+            if mid_epoch and self.resume_epoch_rng is not None:
+                # resumed mid-epoch: the epoch's own image order again, from the shuffle state it started with, so
+                # the rest of it is exactly the images it had not reached (the training draws continue from the
+                # state saved at the stop)
+                self.epoch_rng = self.resume_epoch_rng
+                order = random.Random()
+                order.setstate(self.epoch_rng)
+                batches = D.epoch_batches(self.items, self.batch_sizes, len(self.resolutions), order)
+            else:
+                if mid_epoch:
+                    log("This state was saved before resumes kept the epoch's image order: the rest of the epoch "
+                        "is drawn from a new shuffle")
+                self.epoch_rng = rng.getstate()
+                batches = D.epoch_batches(self.items, self.batch_sizes, len(self.resolutions), rng)
+            self.resume_epoch_rng = None
             # resumed mid-epoch: skip the batches this epoch already used
-            skip = (step - epoch * self.steps_per_epoch) * self.accum if step > epoch * self.steps_per_epoch else 0
+            skip = (step - epoch * self.steps_per_epoch) * self.accum if mid_epoch else 0
             batches = batches[skip:]
             groups = self.iter_groups(batches, epoch, rng)
             for group in groups:
