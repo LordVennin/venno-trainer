@@ -192,7 +192,7 @@ class AnimaAdapter(base.ModelAdapter):
             blk.disable_gradient_checkpointing()
         return len(blocks) - min(skip_last, len(blocks))
 
-    def compile_blocks(self):
+    def compile_blocks(self, checkpoint_inside=False):  # the checkpoint stays outside Anima's compiled blocks
         # compile the block body; checkpointing wraps it unchanged
         for blk in self.dit.blocks:
             blk._forward = torch.compile(blk._forward)

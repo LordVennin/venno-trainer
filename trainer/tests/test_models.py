@@ -122,6 +122,40 @@ class CheckpointSkipTests(unittest.TestCase):
         net.remove()
         return [p.grad.clone() for p in net.parameters()]
 
+    def test_moss_compiled_blocks_with_the_checkpoint_inside_or_outside(self):
+        """Compiling with the checkpoint inside the block (CheckpointedBlock) or around it gives the eager LoRA
+        gradients; a block left out of checkpointing (ckpt_skip) is not checkpointed by its wrapper."""
+        import copy
+
+        from venno.lora import LoRANetwork
+
+        torch.manual_seed(0)
+        base = MossImageTransformer(MossImageParams(dim=64, ffn_dim=96, num_heads=4, num_layers=3, text_dim=32, freq_dim=32))
+        x, t, text = torch.randn(2, 128, 3, 4), torch.tensor([400.0, 700.0]), torch.randn(2, 5, 32)
+        grads = {}
+        for mode in ("eager", "outside", "inside"):
+            m = copy.deepcopy(base)
+            m.gradient_checkpointing, m.ckpt_skip = True, {2}
+            torch.manual_seed(1)
+            net = LoRANetwork([(f"l{i}", layer.proj["qkv"]) for i, layer in enumerate(m.layers)], 4, 4)
+            for lora in net.loras.values():
+                torch.nn.init.normal_(lora.lora_up.weight, std=0.02)
+            net.apply_to()
+            try:
+                if mode != "eager":
+                    MossAdapter.compile_blocks(types.SimpleNamespace(dit=m), checkpoint_inside=mode == "inside")
+                m.train()
+                m(x, t, text).pow(2).mean().backward()
+            except Exception as e:  # no working compiler here
+                self.skipTest(f"torch.compile unavailable: {e}")
+            grads[mode] = [p.grad.clone() for p in net.parameters()]
+            if mode == "inside":
+                self.assertEqual([l.checkpointing for l in m.layers], [True, True, False])
+            net.remove()
+        for mode in ("outside", "inside"):
+            for a, b in zip(grads["eager"], grads[mode]):
+                self.assertTrue(torch.allclose(a, b, atol=1e-5, rtol=1e-4), f"{mode}: {(a - b).abs().max()}")
+
     def test_moss_batch_with_different_caption_lengths_runs_unpadded(self):
         """Captions of different lengths: picture by picture, each unpadded, with the padded batch's predictions and
         LoRA gradients (the padded batch masks the padding out of every attention)."""

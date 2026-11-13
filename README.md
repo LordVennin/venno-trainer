@@ -15,15 +15,20 @@ both models. You do not need the Anima trainer, ai-toolkit or their environments
 
 ## Setup (Linux, NVIDIA GPU)
 
-Requirements: Python 3.10+, Node.js 18+, an NVIDIA driver for CUDA 12.8 (R570+).
+Requirements: Python 3.11+ (3.10 works on the older PyTorch), Node.js 18+, an NVIDIA driver
+R580+ for PyTorch 2.15 with CUDA 13.4 (R570+ for the CUDA 12.8 build).
 
 ```bash
-./setup.sh      # creates ./venv (PyTorch CUDA 12.8 + trainer packages), installs the UI
+./setup.sh      # creates ./venv (PyTorch + trainer packages), installs the UI
 ./start.sh      # http://localhost:3100
 ```
 
-`setup.sh` options: `TORCH_INDEX=https://download.pytorch.org/whl/cu126 ./setup.sh` for an
-older driver, `PYTHON=python3.12` to choose the interpreter, `FAST_KERNELS=0` to skip
+`setup.sh` installs PyTorch 2.15 (CUDA 13.4) when the driver is R580+ and the venv's Python is
+3.11+; otherwise the CUDA 12.8 build, keeping the PyTorch version already installed. Running it
+again on an existing install upgrades it the same way (a 3.10 venv: `rm -rf venv` and
+`PYTHON=python3.12 ./setup.sh`). Options: `TORCH_VERSION=2.11.0
+TORCH_INDEX=https://download.pytorch.org/whl/cu128 ./setup.sh` for a specific build,
+`PYTHON=python3.12` to choose the interpreter, `FAST_KERNELS=0` to skip
 `flash-linear-attention`. The venv is about 6 GB, almost all of it PyTorch + CUDA. pip's
 download cache is disabled during setup so wheels are not stored a second time.
 
@@ -66,6 +71,12 @@ Options to try, in this order:
 2. **Batch size**: larger batches use the GPU better, if VRAM allows.
 3. **torch.compile** (experimental): compiles the transformer blocks. The first step at each new
    bucket shape is slow, the rest are faster. It falls back to normal mode if compiling fails.
+   On PyTorch 2.15+, MOSS-Image's gradient checkpoint is compiled into each block, as Fizgig does:
+   2.15 keeps about 2 activations per block for the backward instead of 7–10 (Fizgig measured
+   MOSS at batch 3 going from 21 to 6.7 GB), which leaves room for more *Blocks Without
+   Checkpointing*. Older PyTorch keeps the checkpoint outside the compiled block.
+4. A batch whose captions differ in length runs picture by picture, each at its own caption length,
+   so attention needs no padding mask and keeps PyTorch's fast kernels (as Fizgig and OneTrainer).
 
 **fp8 base weights** save memory but are slightly slower, so only use them when a setting would
 not otherwise fit. `setup.sh` installs `flash-linear-attention`, which speeds up the MOSS text

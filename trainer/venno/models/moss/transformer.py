@@ -193,6 +193,25 @@ class _Block(nn.Module):
         return x + gate(self.proj["ffn_down"](_situ(hidden, ffn_gate)), 5)
 
 
+class CheckpointedBlock(nn.Module):
+    """A block that does its own gradient checkpointing, so torch.compile can take the checkpoint into the block's
+    graph (the checkpoint "inside" the compiled region; _ckpt then calls it directly). On PyTorch 2.15 that keeps
+    about 2 activations per block for the backward instead of the 7-10 earlier versions keep (Fizgig #221: MOSS
+    batch 3 at 21 -> 6.7 GB); on older PyTorch the checkpoint stays outside the compiled block."""
+
+    handles_checkpointing = True
+
+    def __init__(self, block, checkpointing):
+        super().__init__()
+        self.block = block
+        self.checkpointing = checkpointing
+
+    def forward(self, *args, **kwargs):
+        if self.checkpointing and torch.is_grad_enabled():
+            return checkpoint(self.block, *args, use_reentrant=False, **kwargs)
+        return self.block(*args, **kwargs)
+
+
 class MossImageTransformer(nn.Module):
     @classmethod
     def aitk_config_from_state_dict(cls, state_dict):
@@ -284,6 +303,8 @@ class MossImageTransformer(nn.Module):
         self.gradient_checkpointing = False
 
     def _ckpt(self, module, *args):
+        if getattr(module, "handles_checkpointing", False):
+            return module(*args)
         if self.gradient_checkpointing and torch.is_grad_enabled():
             return checkpoint(module, *args, use_reentrant=False)
         return module(*args)

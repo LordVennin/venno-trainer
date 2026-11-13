@@ -61,6 +61,12 @@ def check_stop():
         raise StopTraining()
 
 
+def torch_version():
+    """(major, minor) of the installed PyTorch."""
+    parts = torch.__version__.split("+")[0].split(".")
+    return tuple(int(p) if p.isdigit() else 0 for p in parts[:2])
+
+
 def num(v, default):
     try:
         return float(v)
@@ -348,8 +354,12 @@ class Trainer:
             for name in ("cache_size_limit", "recompile_limit"):
                 if hasattr(dynamo.config, name):
                     setattr(dynamo.config, name, 64)  # one graph per bucket shape
-            n = self.adapter.compile_blocks()
-            log(f"torch.compile enabled for {n} blocks (the first steps of each new bucket shape are slow)")
+            # PyTorch 2.15 keeps ~2 activations per block for a checkpoint compiled into the block (earlier versions
+            # 7-10, more memory than checkpointing outside), so only there does the checkpoint go inside
+            inside = torch_version() >= (2, 15)
+            n = self.adapter.compile_blocks(checkpoint_inside=inside)
+            log(f"torch.compile enabled for {n} blocks, gradient checkpoint {'inside' if inside else 'outside'} "
+                "the compiled blocks (the first steps of each new bucket shape are slow)")
         except Exception as e:
             log(f"torch.compile unavailable ({e}); continuing without it")
 

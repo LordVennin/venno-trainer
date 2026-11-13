@@ -19,7 +19,7 @@ from PIL import Image
 
 from .. import base
 from ..base import split_lora_key
-from .transformer import MossImageParams, MossImageTransformer
+from .transformer import CheckpointedBlock, MossImageParams, MossImageTransformer
 from .vae import AutoEncoder, convert_diffusers_state_dict
 
 VARIANT_REPOS = {
@@ -300,11 +300,22 @@ class MossAdapter(base.ModelAdapter):
         self.dit.ckpt_skip = set(range(n - min(skip_last, n), n))
         return n - len(self.dit.ckpt_skip)
 
-    def compile_blocks(self):
-        blocks = list(self.dit.layers) + list(self.dit.text_embedder.blocks)
-        for blk in blocks:
+    def compile_blocks(self, checkpoint_inside=False):
+        """Compile the 42 blocks and the text adapter's. checkpoint_inside (PyTorch 2.15+): each checkpointed block is
+        compiled together with its checkpoint (CheckpointedBlock), as Fizgig does; otherwise the checkpoint wraps
+        the compiled block."""
+        dit = self.dit
+        if checkpoint_inside:
+            for i, layer in enumerate(dit.layers):
+                wrapped = CheckpointedBlock(layer, dit.gradient_checkpointing and i not in dit.ckpt_skip)
+                wrapped.compile()
+                dit.layers[i] = wrapped
+        else:
+            for blk in dit.layers:
+                blk.compile()
+        for blk in dit.text_embedder.blocks:
             blk.compile()
-        return len(blocks)
+        return len(dit.layers) + len(dit.text_embedder.blocks)
 
     def predict(self, noisy, sigmas, text):
         """A batch whose captions differ in length runs picture by picture, each at its own caption length (one
