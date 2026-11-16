@@ -359,6 +359,108 @@ app.get("/api/jobs/:name/checkpoints", h((req, res) => {
   res.json({ dir: outputDir, checkpoints: list });
 }));
 
+// ------------------------------------------------------------- LoRA merge
+// Merges and rank reports run `python -m venno.merge` on the CPU in the background (a large LoRA
+// takes a few minutes, so the page polls /api/lora/task); one at a time, safe beside training.
+let loraTask = null;
+
+// Every job's saved LoRA files, newest first, for the merge tool's file lists.
+app.get("/api/loras", h((req, res) => {
+  const out = [];
+  if (fs.existsSync(JOBS_DIR)) {
+    for (const job of fs.readdirSync(JOBS_DIR)) {
+      const dir = path.join(JOBS_DIR, job, "output");
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) continue;
+      for (const name of fs.readdirSync(dir)) {
+        if (!name.endsWith(".safetensors")) continue;
+        const full = path.join(dir, name);
+        out.push({ job, name, path: full, mtime: fs.statSync(full).mtimeMs });
+      }
+    }
+  }
+  res.json(out.sort((a, b) => b.mtime - a.mtime));
+}));
+
+function startLoraTask(kind, args) {
+  const task = { id: Date.now(), kind, state: "running", started: Date.now(), result: null, error: null };
+  const proc = spawn(pythonFor(getSettings()), ["-m", "venno.merge", ...args], {
+    cwd: native.TRAINER_DIR,
+    env: { ...process.env, PYTHONPATH: native.TRAINER_DIR, PYTHONIOENCODING: "utf-8", CUDA_VISIBLE_DEVICES: "" },
+    windowsHide: true,
+  });
+  let out = "";
+  let err = "";
+  proc.stdout.on("data", (d) => (out += d));
+  proc.stderr.on("data", (d) => (err = (err + d).slice(-4000)));
+  const finish = (code, failure) => {
+    if (task.state !== "running") return;
+    let parsed = null;
+    try {
+      parsed = JSON.parse(out.trim().split("\n").pop());
+    } catch (e) {
+      /* no JSON: the error is on stderr */
+    }
+    if (!failure && code === 0 && parsed && !parsed.error) {
+      task.state = "done";
+      task.result = parsed;
+    } else {
+      task.state = "error";
+      task.error = failure || (parsed && parsed.error) || err.trim().split("\n").slice(-4).join("\n") || `exit code ${code}`;
+    }
+    task.finished = Date.now();
+  };
+  proc.on("close", (code) => finish(code));
+  proc.on("error", (e) => finish(null, `Could not start Python: ${e.message}`));
+  loraTask = task;
+  return task;
+}
+
+function loraTaskBusy(res) {
+  if (loraTask && loraTask.state === "running") {
+    res.status(409).json({ error: "A merge or rank report is already running" });
+    return true;
+  }
+  return false;
+}
+
+function missingFiles(paths) {
+  return paths.filter((p) => !p || !fs.existsSync(p) || !fs.statSync(p).isFile());
+}
+
+app.post("/api/lora/report", h((req, res) => {
+  if (loraTaskBusy(res)) return;
+  const files = ((req.body || {}).files || []).map((p) => String(p || "").trim()).filter(Boolean);
+  if (!files.length) return res.status(400).json({ error: "Add a LoRA file first" });
+  const missing = missingFiles(files);
+  if (missing.length) return res.status(400).json({ error: `Not found: ${missing.join(", ")}` });
+  res.json(startLoraTask("report", ["report", ...files]));
+}));
+
+app.post("/api/lora/merge", h((req, res) => {
+  if (loraTaskBusy(res)) return;
+  const { loras = [], mode = "concat", rank, out, dtype = "", overwrite = false } = req.body || {};
+  const specs = loras.map((l) => ({ path: String(l.path || "").trim(), ratio: Number(l.ratio ?? 1) })).filter((l) => l.path);
+  if (specs.length < 2) return res.status(400).json({ error: "Add at least two LoRA files to merge" });
+  const missing = missingFiles(specs.map((l) => l.path));
+  if (missing.length) return res.status(400).json({ error: `Not found: ${missing.join(", ")}` });
+  if (specs.some((l) => !Number.isFinite(l.ratio))) return res.status(400).json({ error: "Every ratio must be a number" });
+  if (!["concat", "svd"].includes(mode)) return res.status(400).json({ error: "Unknown merge mode" });
+  const r = parseInt(rank, 10);
+  if (!(r >= 1)) return res.status(400).json({ error: "Set the rank of the result" });
+  const target = String(out || "").trim();
+  if (!target.endsWith(".safetensors")) return res.status(400).json({ error: "Save the result as a .safetensors file" });
+  if (!fs.existsSync(path.dirname(target))) return res.status(400).json({ error: `Folder not found: ${path.dirname(target)}` });
+  if (specs.some((l) => path.resolve(l.path) === path.resolve(target))) return res.status(400).json({ error: "Save the result under a new name, not over one of the inputs" });
+  if (fs.existsSync(target) && !overwrite) return res.status(409).json({ error: "exists", exists: true });
+  if (dtype && !["bf16", "fp16", "fp32"].includes(dtype)) return res.status(400).json({ error: "Unknown precision" });
+  const args = ["merge", "--out", target, "--mode", mode, "--rank", String(r)];
+  if (dtype) args.push("--dtype", dtype);
+  for (const l of specs) args.push(`${l.path}:${l.ratio}`);
+  res.json(startLoraTask("merge", args));
+}));
+
+app.get("/api/lora/task", h((req, res) => res.json(loraTask)));
+
 // Serve a file from inside the job folder only.
 app.get("/api/jobs/:name/file", h((req, res) => {
   const base = path.resolve(jobDir(req.params.name));

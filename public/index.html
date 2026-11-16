@@ -32,6 +32,7 @@
             <div id="job-list" class="job-list"></div>
             <div class="sidebar-footer">
                 <button id="btn-tagger" class="btn btn-ghost btn-block" title="Browse, tag and auto-tag dataset images">🏷️ Tagger</button>
+                <button id="btn-merge" class="btn btn-ghost btn-block" title="Merge LoRAs into one file and see how well they compress">🔀 Merge LoRAs</button>
                 <button id="btn-global-settings" class="btn btn-ghost btn-block">⚙️ Global Settings</button>
             </div>
         </aside>
@@ -857,6 +858,39 @@
     </div>
 
     <!-- Bulk edit -->
+    <div id="modal-merge" class="modal hidden">
+        <div class="modal-content modal-wide">
+            <h3>Merge LoRAs</h3>
+            <p class="hint">Combines LoRAs into one file, and the <b>rank report</b> shows how much of each LoRA's effect a given rank keeps. Runs on the CPU, so it is safe while training; a large LoRA takes a few minutes.</p>
+            <datalist id="mg-files"></datalist>
+            <div id="mg-rows"></div>
+            <button id="mg-add" class="btn btn-sm" style="margin-bottom:12px;">+ Add a LoRA</button>
+            <div class="form-row">
+                <div class="form-group"><label>Mode</label><select id="mg-mode">
+                    <option value="concat">Compress the first, keep the others whole</option>
+                    <option value="svd">Add them together, then compress the sum (SVD)</option>
+                </select><small id="mg-mode-hint"></small></div>
+                <div class="form-group"><label>Rank of the Result</label><input type="number" id="mg-rank" min="1"><small id="mg-rank-hint"></small></div>
+            </div>
+            <div class="form-row">
+                <div class="form-group"><label>Save As</label><input type="text" id="mg-out" placeholder="/path/to/merged.safetensors"></div>
+                <div class="form-group"><label>Precision</label><select id="mg-dtype">
+                    <option value="">Same as the first LoRA</option>
+                    <option value="bf16">bf16</option>
+                    <option value="fp16">fp16</option>
+                    <option value="fp32">fp32</option>
+                </select></div>
+            </div>
+            <div id="mg-result"></div>
+            <div class="modal-actions">
+                <span id="mg-status" class="hint" style="flex:1;"></span>
+                <button class="btn btn-ghost" data-close="modal-merge">Close</button>
+                <button id="mg-report" class="btn">📊 Rank Report</button>
+                <button id="mg-run" class="btn btn-primary">🔀 Merge</button>
+            </div>
+        </div>
+    </div>
+
     <div id="modal-bulk" class="modal hidden">
         <div class="modal-content">
             <h3>Bulk Edit Datasets</h3>
@@ -932,6 +966,7 @@
     <script src="js/app.js"></script>
     <script src="js/tagger.js"></script>
     <script src="js/captioner.js"></script>
+    <script src="js/merge.js"></script>
 </body>
 
 </html>

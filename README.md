@@ -251,6 +251,20 @@ caption loads it again.
   stack at strength 1 instead of pulling against each other: a style LoRA trained on its own and
   stacked on a big concept LoRA loses part of its strength to the concept LoRA's own look. Only the
   new LoRA is saved; training samples (and samples from a saved LoRA) show both. Use them together.
+- **🔀 Merge LoRAs** (sidebar) combines LoRA files into one, on the CPU (safe while training; a
+  rank-135 MOSS LoRA takes a couple of minutes):
+  - *Compress the first, keep the others whole* (recommended for a main LoRA plus a smaller one):
+    the first LoRA is compressed to (result rank − the others' ranks) and the others' factors are
+    added beside it, so the result is exactly the first, minus its weakest directions, plus the
+    others untouched. A plain SVD merge of the sum instead cuts the smaller LoRA's subtler
+    directions first.
+  - *Add them together, then compress the sum (SVD)*: exact when the rank holds all the inputs'
+    ranks.
+  - **Rank report**: for each file, the share of its effect (squared singular values over all
+    modules) kept at a range of ranks, the weakest module and the file size at each rank, so you
+    can pick the rank that fits an upload limit. Ratios set each LoRA's strength in the result.
+    q/k/v keep their shared down matrix, so merged MOSS LoRAs load back into Venno and anywhere
+    the inputs did. Also on the command line: `python -m venno.merge report|merge …`.
 - **Generate Samples from a Saved LoRA** (Samples tab) makes the job's sample prompts with any LoRA
   in the output folder, without training, as several side-by-side sets: as trained, and for MOSS
   without the LoRA's block 22, or with block 22 also run in the negative branch. The model loads
