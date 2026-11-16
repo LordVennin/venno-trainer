@@ -28,6 +28,14 @@ class TimestepTests(unittest.TestCase):
         self.assertEqual(TS.share_for_epoch("40%", 9), (40, False))
         self.assertEqual([TS.share_for_epoch("75:5:40", e)[0] for e in (1, 5, 6, 20)], [75, 75, 40, 40])
         self.assertEqual([TS.share_for_epoch("60:4:30:8", e)[0] for e in (4, 6, 8, 9)], [60, 45, 30, 30])
+        keys = "25@1, 25@4, 30@6, 40@10, 50@15"
+        self.assertEqual([TS.share_for_epoch(keys, e)[0] for e in range(1, 17)],
+                         [25, 25, 25, 25, 27.5, 30, 32.5, 35, 37.5, 40, 42, 44, 46, 48, 50, 50])
+        self.assertEqual([TS.share_for_epoch("25@5 40@6", e) for e in (1, 5, 6, 9)], [(25, False), (25, False), (40, False), (40, False)])
+        self.assertEqual(TS.share_for_epoch("30%@3", 1)[0], 30, "held before the first keyframe")
+        for bad in ("30@6, 25@4", "30@6, 40@6", "30@0", "120@3", "x@2", "30@", "30@2.5"):
+            with self.assertRaises(ValueError, msg=bad):
+                TS.parse_share(bad)
         slide = [TS.share_for_epoch("60:7:30:8:3", e) for e in range(1, 18)]
         self.assertEqual([s for s, _ in slide], [60] * 7 + [30, 60, 60, 30, 60, 60, 30, 60, 60, 30])
         self.assertEqual([e + 1 for e, (_, half) in enumerate(slide) if half], [11, 14, 17])

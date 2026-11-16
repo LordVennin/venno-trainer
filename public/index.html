@@ -280,7 +280,7 @@
                             <div class="form-group" data-show="training.timestep=moss_report">
                                 <label>Clean-end Share</label>
                                 <input type="text" data-bind="training.clean_end_share" placeholder="blank = the report's own (~11%)">
-                                <small>Share of steps at the clean end (noise below 50%), where detail and identity are learned, counted per epoch: <code>40</code>; <code>75:5:40</code> (75% for epochs 1–5, then 40%); <code>60:7:30:8:3</code> (Fizgig's "Slide" default: 60% until epoch 7, 30% at epoch 8, then 60% with every 3rd epoch at 30% and half the LR). Fizgig tuned Slide on small datasets trained for ~70 epochs; a run of a few epochs over a big dataset stays at its first share.</small>
+                                <small>Share of steps at the clean end (noise below 50%), where detail and identity are learned, counted per epoch: <code>40</code>; <code>75:5:40</code> (75% for epochs 1–5, then 40%); <code>60:7:30:8:3</code> (Fizgig's "Slide" default: 60% until epoch 7, 30% at epoch 8, then 60% with every 3rd epoch at 30% and half the LR); or keyframes, as many as you like: <code>25@1, 30@6, 45@10</code> (share@epoch, sliding in a straight line between them, held before the first and after the last; <code>25@5, 40@6</code> jumps). Epochs count across resumes. Fizgig tuned Slide on small datasets trained for ~70 epochs; a run of a few epochs over a big dataset stays at its first share.</small>
                             </div>
                             <div class="form-group">
                                 <label>Loss Type</label>

@@ -227,7 +227,9 @@ caption loads it again.
   puts about 11% there, AI-Toolkit's shift-5 uniform timesteps about 17%. The share is counted in
   epochs, and Slide was tuned on small datasets trained for ~70 epochs: a run of a few epochs over a
   big dataset stays at its first share, so set a single share (e.g. `40`) or a schedule that fits your
-  epoch count. Ported from [Fizgig](https://github.com/shootthesound/Fizgig) (Apache-2.0).
+  epoch count. Any schedule can be written as keyframes, as many as wanted: `25@1, 30@6, 45@10`
+  (share@epoch, a straight slide between them, held before the first and after the last; two on
+  neighbouring epochs, `25@5, 40@6`, make a jump). Epochs count across resumes. Ported from [Fizgig](https://github.com/shootthesound/Fizgig) (Apache-2.0).
 - **What the LoRA trains**: all 42 MOSS-Image blocks by default, as Fizgig trains them (its A/B
   tests found better likeness than leaving block 22 out). MOSS's sampler skips block 22 on the CFG
   negative branch, so a LoRA's block-22 change is multiplied by the CFG scale on every prompt; a

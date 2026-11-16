@@ -15,6 +15,8 @@ keeping the curve's shape, optionally changing over the run:
     "60:7:30:8"     60% until epoch 7, sliding in a straight line to 30% by epoch 8
     "60:7:30:8:3"   ... and after epoch 8 the higher share, with every 3rd epoch
                     (11, 14, 17, ...) at the lower one and half the learning rate
+    "25@1, 30@6, 45@10, 50@15"   keyframes, as many as wanted: share@epoch, a straight
+                    slide between them, held before the first and after the last
 Ported from Fizgig (github.com/shootthesound/Fizgig, moss_image/driver.py,
 Apache-2.0), whose default for MOSS-Image LoRAs is the last one ("Slide")."""
 
@@ -50,21 +52,47 @@ def mu_for_clean_share(pct):
     return 0.5 * (lo + hi)
 
 
+SHARE_FORMATS = ("give a share (40), share:epochs:share (75:5:40 = 75% for the first 5 epochs, then 40%), "
+                 "share:epoch:share:epoch[:every] (60:7:30:8:3 = 60% until epoch 7, 30% by epoch 8, then every 3rd "
+                 "epoch at 30% and half the learning rate, the others at 60%), or keyframes share@epoch (25@1, 30@6, "
+                 "45@10 = a straight slide between them)")
+
+
+def parse_keyframes(spec):
+    """'25@1, 30@6, 45@10' -> [(1, 25.0), (6, 30.0), (10, 45.0)], epochs rising; ValueError if malformed."""
+    frames = []
+    for item in [x for x in str(spec).replace("%", "").replace(";", ",").replace(",", " ").split() if x]:
+        share, at, epoch = item.partition("@")
+        try:
+            frames.append((int(epoch), float(share)))
+        except ValueError:
+            raise ValueError(f"Clean-end share '{spec}': '{item}' is not share@epoch (e.g. 30@6)")
+    if not frames:
+        raise ValueError(f"Clean-end share '{spec}': {SHARE_FORMATS}")
+    for (e0, _), (e1, _) in zip(frames, frames[1:]):
+        if e1 <= e0:
+            raise ValueError(f"Clean-end share '{spec}': keyframe epochs must rise ({e0} then {e1})")
+    for e, share in frames:
+        if e < 1 or not (0 < share <= 100):
+            raise ValueError(f"Clean-end share '{spec}': {share:g}@{e} needs a share above 0 and up to 100, at epoch 1 or later")
+    return frames
+
+
 def parse_share(spec):
-    """Validate a Clean-end share; returns its numbers ([] = the report's own schedule)."""
+    """Validate a Clean-end share; returns its numbers ([] = the report's own schedule), or for keyframes a list
+    of (epoch, share) pairs."""
     s = str(spec or "").replace("%", "").strip()
     if not s:
         return []
+    if "@" in s:
+        return parse_keyframes(s)
     try:
         parts = [float(x) for x in s.split(":")]
     except ValueError:
         parts = None
     if not parts or len(parts) not in (1, 3, 4, 5) or any(not (0 < p <= 100) for p in parts[::2]) \
             or (len(parts) >= 4 and parts[3] < parts[1]):
-        raise ValueError(
-            f"Clean-end share '{spec}': give a share (40), share:epochs:share (75:5:40 = 75% for the first 5 epochs, "
-            "then 40%), or share:epoch:share:epoch[:every] (60:7:30:8:3 = 60% until epoch 7, 30% by epoch 8, then "
-            "every 3rd epoch at 30% and half the learning rate, the others at 60%)")
+        raise ValueError(f"Clean-end share '{spec}': {SHARE_FORMATS}")
     return parts
 
 
@@ -73,6 +101,14 @@ def share_for_epoch(spec, epoch):
     parts = parse_share(spec)
     if not parts:
         return None, False
+    if isinstance(parts[0], tuple):  # keyframes
+        e = int(epoch)
+        if e <= parts[0][0]:
+            return parts[0][1], False
+        for (e0, s0), (e1, s1) in zip(parts, parts[1:]):
+            if e <= e1:
+                return s0 + (s1 - s0) * (e - e0) / (e1 - e0), False
+        return parts[-1][1], False
     if len(parts) == 1:
         return parts[0], False
     first, until, rest = parts[:3]

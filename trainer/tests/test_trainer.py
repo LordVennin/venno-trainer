@@ -351,6 +351,26 @@ class MossTests(unittest.TestCase):
         s = trainer.sample_sigmas(20000, g)
         self.assertAlmostEqual(float((s < 0.5).float().mean()), 0.30, delta=0.02)
 
+    def test_clean_end_keyframes_in_a_run(self):
+        job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}], duration_unit="epochs",
+                         max_epochs=3, save_every_epochs=10, optimizer="AdamW", output_name="keys", workers=1,
+                         clean_end_share="20@1, 40@3", ema_decay=0)
+        job["dataset"].update(resolutions="64", batch_sizes="1", min_bucket=32, max_bucket=128, bucket_steps=16)
+        job["network"].update(dim=4, alpha=4)
+        job["sampling"]["enabled"] = False
+        lines, orig_log = [], T.log
+        T.log = lambda *a: (lines.append(" ".join(map(str, a))), orig_log(*a))
+        try:
+            T._stop_requested = False
+            T.Trainer(run_config(job, self.paths, os.path.join(self.tmp, "out_keys"), os.path.join(self.tmp, "cache"))).train()
+        finally:
+            T.log = orig_log
+        self.assertEqual([l for l in lines if l.startswith("Timesteps from epoch")], [
+            "Timesteps from epoch 1: 20% of steps at the clean end (noise below 50%)",
+            "Timesteps from epoch 2: 30% of steps at the clean end (noise below 50%)",
+            "Timesteps from epoch 3: 40% of steps at the clean end (noise below 50%)",
+        ])
+
     def test_cosine_settle_schedule_in_a_run(self):
         out = os.path.join(self.tmp, "out_settle")
         job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}],

@@ -168,3 +168,10 @@ test("train on top of a LoRA: strength above 0; the same file as Initialize From
   assert.match(same[0].msg, /counts twice/);
 });
 
+test("clean-end share keyframes: share@epoch with rising epochs", () => {
+  for (const ok of ["25@1, 25@4, 30@6, 40@10, 50@15", "25@1 30@6", "30%@2", "40", "75:5:40", "60:7:30:8:3"]) assert.ok(S.cleanShareValid(ok), ok);
+  for (const bad of ["30@6, 25@4", "30@6, 40@6", "30@0", "120@3", "x@2", "30@", "30@2.5"]) assert.ok(!S.cleanShareValid(bad), bad);
+  const job = S.normalizeJob({ model: "moss_image", training: { clean_end_share: "30@6, 25@4" }, dataset: { folders: [{ ...S.defaultFolder(), path: "/d" }] } });
+  assert.match(S.validateJob(job)[0].msg, /keyframes share@epoch with rising epochs/);
+});
+
