@@ -33,7 +33,7 @@ from .cache import LatentCache, TextCache
 from .ema import EMAWeights
 from .fp8 import quantize_modules
 from .log import Progress, log
-from .lora import LoRANetwork
+from .lora import FrozenLoRA, LoRANetwork
 from .models.base import free_memory
 from .optim import create_optimizer, create_scheduler
 
@@ -298,8 +298,31 @@ class Trainer:
                 log(f"Stored {n} base Linear weights as fp8")
                 free_memory()
 
+    def apply_base_lora(self):
+        """Network tab, Train on Top of a LoRA: that file applied frozen at its strength, before the LoRA being
+        trained wraps the same layers, so the new LoRA learns what it adds with the other present (and the two
+        stack at strength 1 as they were trained). Samples show both."""
+        self.base_lora = None
+        path = (self.n.get("base_lora") or "").strip()
+        if not path:
+            return
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Train on Top of a LoRA: {path} not found")
+        sd = self.adapter.import_lora(load_file(path))
+        in_file = {k[: -len(".lora_down.weight")] for k in sd if k.endswith(".lora_down.weight")}
+        targets = [(n, m) for n, m in self.adapter.lora_targets([]) if n in in_file]
+        if not targets:
+            raise ValueError(f"Train on Top of a LoRA: {path} has no LoRA modules of this model")
+        strength = num(self.n.get("base_lora_strength"), 1.0)
+        self.base_lora = FrozenLoRA(targets, sd, strength).to(self.device, self.dtype)
+        self.base_lora.apply_to()
+        left = len(in_file) - len(targets)
+        log(f"Training on top of {os.path.basename(path)} (frozen, strength {strength:g}): {len(targets)} modules"
+            + (f"; {left} in the file are not in this model and are left out" if left else ""))
+
     def setup_model(self):
         self.load_dit()
+        self.apply_base_lora()
         ignore = [p for p in re.split(r"[,\s]+", self.n.get("ignore_layers") or "") if p]
         targets = self.adapter.lora_targets(ignore)
         rank = max(1, intv(self.n.get("dim"), 16))
@@ -671,6 +694,7 @@ class Trainer:
         self.cache_text()
         sd = self.adapter.import_lora(load_file(path))
         self.load_dit()
+        self.apply_base_lora()  # a LoRA trained on top of another is shown with it, as it trained
         in_file = {k[: -len(".lora_down.weight")] for k in sd if k.endswith(".lora_down.weight")}
         targets = [(n, m) for n, m in self.adapter.lora_targets([]) if n in in_file]
         if not targets:

@@ -98,3 +98,34 @@ class LoRANetwork(nn.Module):
 
     def trainable_parameters(self):
         return [p for p in self.parameters() if p.requires_grad]
+
+
+class FrozenLoRA(nn.Module):
+    """A saved LoRA applied frozen at a fixed strength, to train a new LoRA on top of it. Each module keeps the
+    file's own rank and alpha; nothing here trains or is saved with the new LoRA. Apply it before the new LoRA is
+    built, so the new LoRA's modules wrap this one's (each layer: new LoRA -> frozen LoRA -> base weight)."""
+
+    def __init__(self, targets: List[Tuple[str, nn.Linear]], sd: Dict[str, torch.Tensor], strength: float = 1.0):
+        super().__init__()
+        self.loras = nn.ModuleDict()
+        for name, module in targets:
+            down, up = sd[f"{name}.lora_down.weight"], sd[f"{name}.lora_up.weight"]
+            if down.shape[1] != module.in_features or up.shape[0] != module.out_features or up.shape[1] != down.shape[0]:
+                raise ValueError(f"LoRA module {name} does not fit this model ({tuple(down.shape)}, {tuple(up.shape)})")
+            alpha = sd.get(f"{name}.alpha")
+            lora = LoRAModule(name, module, down.shape[0], float(alpha) if alpha is not None else down.shape[0])
+            with torch.no_grad():
+                lora.lora_down.weight.copy_(down)
+                lora.lora_up.weight.copy_(up)
+            lora.multiplier = float(strength)
+            lora.requires_grad_(False)
+            self.loras[name.replace(".", "__")] = lora
+
+    def apply_to(self):
+        for lora in self.loras.values():
+            lora.apply()
+
+    def remove(self):
+        for lora in self.loras.values():
+            lora.remove()
+

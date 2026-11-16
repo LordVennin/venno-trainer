@@ -116,6 +116,8 @@
         alpha: 16,
         dropout: 0,
         init_weights: "",
+        base_lora: "", // train on top of this LoRA, applied frozen
+        base_lora_strength: 1,
         ignore_layers: "",
         auto_resume: false,
         resume_path: "",
@@ -276,6 +278,14 @@
     }
     const ema = Number(t.ema_decay);
     if (ema && !(ema > 0 && ema < 1)) issues.push({ level: "error", msg: "EMA decay must be between 0 and 1 (0 = off)." });
+    const base = String(job.network.base_lora || "").trim();
+    if (base) {
+      const s = Number(job.network.base_lora_strength);
+      if (!(s > 0)) issues.push({ level: "error", msg: "The strength of the LoRA trained on top of must be above 0." });
+      if (base === String(job.network.init_weights || "").trim()) {
+        issues.push({ level: "warn", msg: "Initialize From LoRA and Train on Top of a LoRA are the same file: the new LoRA starts as a copy of it, so that LoRA counts twice. Usually only Train on Top is wanted." });
+      }
+    }
     for (const f of folders) {
       if (!captionMixValid(f.caption_mix)) {
         issues.push({ level: "error", msg: `Caption mix "${f.caption_mix}" (${String(f.path || "").trim().split(/[\\/]/).filter(Boolean).pop() || "a dataset"}) is not valid: give tags:caption:both weights, e.g. 25:25:50.` });

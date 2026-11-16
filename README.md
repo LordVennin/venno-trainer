@@ -246,6 +246,11 @@ caption loads it again.
 - Sample images during training use each model's own sampler: Euler with CFG for Anima, and for
   MOSS the vendor's snapped shift-5 schedule with block 22 skipped on the negative branch. The
   Prompts tab sets size, steps, CFG, seed and shift per prompt.
+- **Train on Top of a LoRA** (Network tab): applies a saved LoRA, frozen, at the strength you will use
+  it, while a new LoRA trains. The new LoRA learns what it adds *with that one present*, so the two
+  stack at strength 1 instead of pulling against each other: a style LoRA trained on its own and
+  stacked on a big concept LoRA loses part of its strength to the concept LoRA's own look. Only the
+  new LoRA is saved; training samples (and samples from a saved LoRA) show both. Use them together.
 - **Generate Samples from a Saved LoRA** (Samples tab) makes the job's sample prompts with any LoRA
   in the output folder, without training, as several side-by-side sets: as trained, and for MOSS
   without the LoRA's block 22, or with block 22 also run in the negative branch. The model loads

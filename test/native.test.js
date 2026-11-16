@@ -158,3 +158,13 @@ test("training runs keep Triton's FP fusion on (its default changes in Triton 3.
   else process.env.TRITON_DEFAULT_FP_FUSION = saved;
 });
 
+test("train on top of a LoRA: strength above 0; the same file as Initialize From LoRA is warned", () => {
+  const job = (n) => S.normalizeJob({ model: "moss_image", network: n, dataset: { folders: [{ ...S.defaultFolder(), path: "/d" }] } });
+  assert.deepStrictEqual([S.defaultJob("moss_image").network.base_lora, S.defaultJob("moss_image").network.base_lora_strength], ["", 1]);
+  assert.deepStrictEqual(S.validateJob(job({ base_lora: "/main.safetensors" })), []);
+  assert.match(S.validateJob(job({ base_lora: "/main.safetensors", base_lora_strength: 0 }))[0].msg, /must be above 0/);
+  const same = S.validateJob(job({ base_lora: "/main.safetensors", init_weights: "/main.safetensors" }));
+  assert.strictEqual(same[0].level, "warn");
+  assert.match(same[0].msg, /counts twice/);
+});
+

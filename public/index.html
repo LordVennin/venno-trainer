@@ -379,6 +379,18 @@
                             <input type="text" data-bind="network.init_weights" placeholder="/path/to/lora.safetensors">
                             <small>Start from existing LoRA weights (fresh optimizer). Usually blank.</small>
                         </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Train on Top of a LoRA</label>
+                                <input type="text" data-bind="network.base_lora" placeholder="/path/to/main_lora.safetensors">
+                                <small>Applies this LoRA, frozen, while the new one trains: the new LoRA learns what it adds <i>with that one present</i>, so the two stack at strength 1 instead of fighting (e.g. a style LoRA on top of a concept LoRA). Only the new LoRA is saved; samples show both. Use the two together afterwards.</small>
+                            </div>
+                            <div class="form-group" data-show="network.base_lora">
+                                <label>Its Strength</label>
+                                <input type="number" data-bind="network.base_lora_strength" step="0.05" min="0">
+                                <small>The strength you will use it at (1 = as saved).</small>
+                            </div>
+                        </div>
                         <div class="note">Saved LoRAs use ComfyUI's key layout: <span data-model="anima"><code>lora_unet_blocks_N_…</code> (same as the Anima trainer)</span><span data-model="moss_image"><code>diffusion_model.layers.N.proj.q/k/v/o…</code> (same as ai-toolkit)</span>.</div>
 
                         <h4>Resume Training</h4>

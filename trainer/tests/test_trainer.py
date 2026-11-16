@@ -507,6 +507,79 @@ class MossTests(unittest.TestCase):
             self.assertTrue(torch.equal(a[k], b[k]), k)
         self.assertTrue(any(l.startswith("Memory check: the largest batch (") for l in lines), lines)
 
+    def test_train_on_top_of_a_frozen_lora(self):
+        from venno.lora import FrozenLoRA, LoRANetwork
+
+        # the math: frozen LoRA at strength s under a fresh (zero) new LoRA = base + s * its delta; only the new trains
+        torch.manual_seed(0)
+        lin = torch.nn.Linear(8, 6)
+        x = torch.randn(3, 8)
+        down, up = torch.randn(2, 8), torch.randn(6, 2)
+        sd = {"l.lora_down.weight": down, "l.lora_up.weight": up, "l.alpha": torch.tensor(1.0)}
+        base_out = lin(x)
+        frozen = FrozenLoRA([("l", lin)], sd, strength=0.5)
+        frozen.apply_to()
+        net = LoRANetwork([("l", lin)], 4, 4)
+        net.apply_to()
+        expect = base_out + 0.5 * (1.0 / 2) * (x @ down.T @ up.T)
+        self.assertTrue(torch.allclose(lin(x), expect, atol=1e-5))
+        lin(x).sum().backward()
+        self.assertTrue(all(p.grad is None for p in frozen.parameters()))
+        self.assertTrue(all(p.grad is not None for p in net.parameters()))
+        net.remove()
+        frozen.remove()
+        self.assertTrue(torch.allclose(lin(x), base_out))
+
+        # a run: B trains on top of A; B's file holds only B; A applied with B reproduces B's trained setup
+        data = os.path.join(self.tmp, "data", "a")
+        cache = os.path.join(self.tmp, "cache_top")
+
+        def train(name, dim, **net):
+            job = F.base_job("moss_image", [{"path": data}], duration_unit="steps", max_steps=3, save_every_epochs=10,
+                             optimizer="AdamW", lr="1e-2", output_name=name, workers=1, ema_decay=0)
+            job["dataset"].update(resolutions="64", batch_sizes="1", min_bucket=32, max_bucket=128, bucket_steps=16)
+            job["network"].update(dim=dim, alpha=dim, **net)
+            job["sampling"].update(enabled=True, width=64, height=64, steps=2, prompts=[{"text": "A red object.", "enabled": True}])
+            out = os.path.join(self.tmp, f"out_{name}")
+            T._stop_requested = False
+            tr = T.Trainer(run_config(job, self.paths, out, cache))
+            tr.train()
+            return tr, os.path.join(out, f"{name}.safetensors")
+
+        _, a_path = train("lora_a", 4)
+        a_before = load_file(a_path)
+        lines, orig_log = [], T.log
+        T.log = lambda *a: (lines.append(" ".join(map(str, a))), orig_log(*a))
+        try:
+            tb, b_path = train("lora_b", 2, base_lora=a_path, base_lora_strength=0.8)
+        finally:
+            T.log = orig_log
+        self.assertTrue(any(l.startswith("Training on top of lora_a.safetensors (frozen, strength 0.8): 12 modules") for l in lines), lines)
+        b = load_file(b_path)
+        self.assertTrue(all(v.shape[0] == 2 for k, v in b.items() if k.endswith("lora_A.weight")), "B's file holds B's rank only")
+        for k, v in load_file(a_path).items():
+            self.assertTrue(torch.equal(v, a_before[k]), "A is not changed")
+        self.assertTrue(any(f.startswith("lora_b_final") for f in os.listdir(os.path.join(self.tmp, "out_lora_b", "samples"))))
+        # stacked by hand (A frozen at 0.8, then B) the model matches the trainer's own setup
+        dit, adapter = tb.adapter.dit, tb.adapter
+        noisy, sig = torch.randn(1, 128, 4, 4), torch.tensor([0.5])
+        text = {"embeds": torch.randn(1, 3, dit.text_embedder.proj.in_features), "mask": torch.ones(1, 3, dtype=torch.bool)}
+        with torch.no_grad():
+            trained = adapter.predict(noisy, sig, text)
+            tb.network.remove()
+            tb.base_lora.remove()
+            alone = adapter.predict(noisy, sig, text)
+            sd_a = adapter.import_lora(load_file(a_path))
+            sd_b = adapter.import_lora(b)
+            names = lambda sd: {k[:-len(".lora_down.weight")] for k in sd if k.endswith(".lora_down.weight")}
+            fa = FrozenLoRA([(n, m) for n, m in adapter.lora_targets([]) if n in names(sd_a)], sd_a, 0.8)
+            fa.apply_to()
+            fb = FrozenLoRA([(n, m) for n, m in adapter.lora_targets([]) if n in names(sd_b)], sd_b, 1.0)
+            fb.apply_to()
+            stacked = adapter.predict(noisy, sig, text)
+        self.assertFalse(torch.allclose(trained, alone))
+        self.assertTrue(torch.allclose(trained, stacked, atol=1e-4), (trained - stacked).abs().max())
+
     def test_samples_from_a_saved_lora(self):
         out = os.path.join(self.tmp, "out_fl")
         job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}],
