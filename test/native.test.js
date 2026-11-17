@@ -113,12 +113,10 @@ test("model defaults: MOSS trains all blocks with its report timesteps; Anima sk
   assert.deepStrictEqual(S.validateJob({ ...m, dataset: { ...m.dataset, folders: [{ ...m.dataset.folders[0], path: "/d" }] } }), []);
 });
 
-test("older MOSS jobs are warned about shift-5 timesteps; leaving block 22 out is not warned; bad settings are errors", () => {
+test("shift-5 uniform timesteps and leaving block 22 out are not warned about; bad settings are errors", () => {
   const folders = [{ ...S.defaultFolder(), path: "/d" }];
-  const old = S.normalizeJob({ model: "moss_image", training: { timestep: "uniform", flow_shift: 5 }, network: { ignore_layers: "layers.22." }, dataset: { folders } });
-  const msgs = S.validateJob(old).map((i) => `${i.level}: ${i.msg}`);
-  assert.strictEqual(msgs.length, 1);
-  assert.match(msgs[0], /^warn: This job uses AI-Toolkit's shift-5/);
+  const shift5 = S.normalizeJob({ model: "moss_image", training: { timestep: "uniform", flow_shift: 5 }, network: { ignore_layers: "layers.22." }, dataset: { folders } });
+  assert.deepStrictEqual(S.validateJob(shift5), []);
   const bad = S.normalizeJob({ model: "moss_image", training: { clean_end_share: "60:7", ema_decay: 1.5 }, dataset: { folders } });
   assert.deepStrictEqual(S.validateJob(bad).map((i) => i.level), ["error", "error"]);
   const anima = S.normalizeJob({ model: "anima", training: { timestep: "moss_report" }, dataset: { folders } });

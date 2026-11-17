@@ -263,12 +263,6 @@
     if (t.timestep === "moss_report" && !cleanShareValid(t.clean_end_share)) {
       issues.push({ level: "error", msg: `Clean-end share "${t.clean_end_share}" is not valid: give a share (40), share:epochs:share (75:5:40), share:epoch:share:epoch[:every] (60:7:30:8:3), or keyframes share@epoch with rising epochs (25@1, 30@6, 45@10).` });
     }
-    if (job.model === "moss_image" && t.timestep === "uniform" && Number(t.flow_shift) === 5) {
-      issues.push({
-        level: "warn",
-        msg: "This job uses AI-Toolkit's shift-5 uniform timesteps (about 17% of steps at the clean end). MOSS-Image's own pretraining timesteps with a Clean-end share are now the default (Training → Timesteps).",
-      });
-    }
     if (t.lr_scheduler === "cosine_settle") {
       const first = Number(t.settle_first_epochs);
       if (!(Number.isInteger(first) && first >= 1)) issues.push({ level: "error", msg: "First Cycle Epochs must be a whole number of epochs, 1 or more." });
