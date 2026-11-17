@@ -58,24 +58,51 @@ SHARE_FORMATS = ("give a share (40), share:epochs:share (75:5:40 = 75% for the f
                  "45@10 = a straight slide between them)")
 
 
-def parse_keyframes(spec):
-    """'25@1, 30@6, 45@10' -> [(1, 25.0), (6, 30.0), (10, 45.0)], epochs rising; ValueError if malformed."""
+def parse_keyframes(spec, setting="Clean-end share", value="share", high=100.0, example="30@6"):
+    """'25@1, 30@6, 45@10' -> [(1, 25.0), (6, 30.0), (10, 45.0)], epochs rising, values above 0 and up to
+    `high`; ValueError naming the setting if malformed."""
     frames = []
     for item in [x for x in str(spec).replace("%", "").replace(";", ",").replace(",", " ").split() if x]:
-        share, at, epoch = item.partition("@")
+        v, at, epoch = item.partition("@")
         try:
-            frames.append((int(epoch), float(share)))
+            frames.append((int(epoch), float(v)))
         except ValueError:
-            raise ValueError(f"Clean-end share '{spec}': '{item}' is not share@epoch (e.g. 30@6)")
+            raise ValueError(f"{setting} '{spec}': '{item}' is not {value}@epoch (e.g. {example})")
     if not frames:
-        raise ValueError(f"Clean-end share '{spec}': {SHARE_FORMATS}")
+        raise ValueError(f"{setting} '{spec}': give {value}@epoch keyframes (e.g. {example})")
     for (e0, _), (e1, _) in zip(frames, frames[1:]):
         if e1 <= e0:
-            raise ValueError(f"Clean-end share '{spec}': keyframe epochs must rise ({e0} then {e1})")
-    for e, share in frames:
-        if e < 1 or not (0 < share <= 100):
-            raise ValueError(f"Clean-end share '{spec}': {share:g}@{e} needs a share above 0 and up to 100, at epoch 1 or later")
+            raise ValueError(f"{setting} '{spec}': keyframe epochs must rise ({e0} then {e1})")
+    for e, v in frames:
+        if e < 1 or not (0 < v <= high):
+            raise ValueError(f"{setting} '{spec}': {v:g}@{e} needs a {value} above 0 and up to {high:g}, at epoch 1 or later")
     return frames
+
+
+def interpolate(frames, epoch):
+    """The value at 1-based `epoch`: a straight line between keyframes, held before the first and after the last."""
+    e = int(epoch)
+    if e <= frames[0][0]:
+        return frames[0][1]
+    for (e0, v0), (e1, v1) in zip(frames, frames[1:]):
+        if e <= e1:
+            return v0 + (v1 - v0) * (e - e0) / (e1 - e0)
+    return frames[-1][1]
+
+
+def shift_for_epoch(spec, epoch):
+    """Flow Shift for 1-based `epoch`: a number (blank = 1, no shift), or keyframes shift@epoch such as
+    '5@1, 5@6, 2@10' (5 through epoch 6, sliding to 2 by epoch 10)."""
+    s = str(spec if spec is not None else "").strip()
+    if "@" not in s:
+        try:
+            v = float(s) if s else 1.0
+        except ValueError:
+            raise ValueError(f"Flow Shift '{spec}': give a number (5) or keyframes shift@epoch (5@1, 5@6, 2@10)")
+        if not v > 0:
+            raise ValueError(f"Flow Shift '{spec}' must be above 0 (1 = no shift)")
+        return v
+    return interpolate(parse_keyframes(s, "Flow Shift", "shift", 100.0, "5@6"), epoch)
 
 
 def parse_share(spec):
@@ -102,13 +129,7 @@ def share_for_epoch(spec, epoch):
     if not parts:
         return None, False
     if isinstance(parts[0], tuple):  # keyframes
-        e = int(epoch)
-        if e <= parts[0][0]:
-            return parts[0][1], False
-        for (e0, s0), (e1, s1) in zip(parts, parts[1:]):
-            if e <= e1:
-                return s0 + (s1 - s0) * (e - e0) / (e1 - e0), False
-        return parts[-1][1], False
+        return interpolate(parts, epoch), False
     if len(parts) == 1:
         return parts[0], False
     first, until, rest = parts[:3]

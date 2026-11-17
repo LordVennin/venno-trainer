@@ -362,6 +362,11 @@ class Trainer:
         """Per-epoch timestep curve and LR factor (MOSS report timesteps with a Clean-end share)."""
         self.ts_mu, self.lr_mult = TS.T_MU, 1.0
         if self.t.get("timestep") != "moss_report":
+            spec = self.t.get("flow_shift")
+            self.flow_shift_now = TS.shift_for_epoch(spec, epoch + 1)
+            if "@" in str(spec) and getattr(self, "_shift_logged", None) != self.flow_shift_now:
+                self._shift_logged = self.flow_shift_now
+                log(f"Flow shift from epoch {epoch + 1}: {self.flow_shift_now:g}")
             return
         spec = self.t.get("clean_end_share") or ""
         share, half = TS.share_for_epoch(spec, epoch + 1)
@@ -536,7 +541,7 @@ class Trainer:
             t = torch.sigmoid(torch.randn(n, generator=rng_t))
         else:
             t = torch.rand(n, generator=rng_t)
-        shift = num(self.t.get("flow_shift"), 1.0)
+        shift = getattr(self, "flow_shift_now", None) or TS.shift_for_epoch(self.t.get("flow_shift"), 1)
         if shift != 1.0:
             t = shift * t / (1 + (shift - 1) * t)
         return t.clamp(1e-5, 1 - 1e-5)

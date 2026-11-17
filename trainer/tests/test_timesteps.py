@@ -36,6 +36,11 @@ class TimestepTests(unittest.TestCase):
         for bad in ("30@6, 25@4", "30@6, 40@6", "30@0", "120@3", "x@2", "30@", "30@2.5"):
             with self.assertRaises(ValueError, msg=bad):
                 TS.parse_share(bad)
+        self.assertEqual([TS.shift_for_epoch("5@1, 5@6, 2@10", e) for e in (1, 6, 7, 8, 10, 15)], [5, 5, 4.25, 3.5, 2, 2])
+        self.assertEqual([TS.shift_for_epoch(v, 4) for v in (5.0, "3", "", None)], [5, 3, 1, 1])
+        for bad in ("0", "-1", "abc", "5@6, 2@3", "0@2", "5@"):
+            with self.assertRaises(ValueError, msg=bad):
+                TS.shift_for_epoch(bad, 1)
         slide = [TS.share_for_epoch("60:7:30:8:3", e) for e in range(1, 18)]
         self.assertEqual([s for s, _ in slide], [60] * 7 + [30, 60, 60, 30, 60, 60, 30, 60, 60, 30])
         self.assertEqual([e + 1 for e, (_, half) in enumerate(slide) if half], [11, 14, 17])

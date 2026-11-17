@@ -274,8 +274,8 @@
                             </div>
                             <div class="form-group" data-show="training.timestep!=moss_report">
                                 <label>Flow Shift</label>
-                                <input type="number" data-bind="training.flow_shift" step="0.1" min="0">
-                                <small>Shifts training toward noisier timesteps. Anima default 3.</small>
+                                <input type="text" data-bind="training.flow_shift" placeholder="e.g. 5, or 5@1, 5@6, 2@10">
+                                <small>Shifts training toward noisier timesteps (1 = none; Anima default 3, AI-Toolkit's MOSS-Image setting 5). Keyframes <code>shift@epoch</code> change it over the run, sliding in a straight line between them: <code>5@1, 5@6, 2@10</code> = 5 through epoch 6, then down to 2 by epoch 10. Epochs count across resumes.</small>
                             </div>
                             <div class="form-group" data-show="training.timestep=moss_report">
                                 <label>Clean-end Share</label>

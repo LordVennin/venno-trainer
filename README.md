@@ -213,7 +213,10 @@ caption loads it again.
 - Epoch or step schedules, AdamW / AdamW8bit / PagedAdamW8bit / Adafactor / Prodigy, constant /
   warmup / cosine / cosine-with-restarts / linear / polynomial schedules, gradient accumulation,
   logit-normal or uniform timesteps with a flow shift (Anima's default: logit-normal, shift 3, as in
-  the Anima trainer).
+  the Anima trainer). The flow shift can change over the run with keyframes `shift@epoch`, sliding
+  in a straight line between them: `5@1, 5@6, 2@10` trains structure-heavy (shift 5) through epoch
+  6, then moves steps toward lower noise, down to shift 2 by epoch 10. The log prints the shift each
+  time it changes; epochs count across resumes.
 - **Cosine, then settling epochs** (LR scheduler): one full cosine over the *First Cycle Epochs*
   (default 4), then each later epoch k runs the last 1/k of a cosine over k epochs: it starts from a
   lower peak (about 1/k² of the base rate) and settles to near 0, so every saved epoch is settled.

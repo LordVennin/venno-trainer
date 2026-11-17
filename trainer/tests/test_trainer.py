@@ -371,6 +371,38 @@ class MossTests(unittest.TestCase):
             "Timesteps from epoch 3: 40% of steps at the clean end (noise below 50%)",
         ])
 
+    def test_flow_shift_keyframes_in_a_run(self):
+        job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}], duration_unit="epochs",
+                         max_epochs=3, save_every_epochs=10, optimizer="AdamW", output_name="shifts", workers=1,
+                         timestep="uniform", flow_shift="5@1, 1@3", ema_decay=0)
+        job["dataset"].update(resolutions="64", batch_sizes="1", min_bucket=32, max_bucket=128, bucket_steps=16)
+        job["network"].update(dim=4, alpha=4)
+        job["sampling"]["enabled"] = False
+        lines, sigmas, orig_log = [], {}, T.log
+        orig_sample = T.Trainer.sample_sigmas
+
+        def sample(tr, n, rng_t):
+            s = orig_sample(tr, n, rng_t)
+            sigmas.setdefault(tr.flow_shift_now, []).append(s)
+            return s
+
+        T.log = lambda *a: (lines.append(" ".join(map(str, a))), orig_log(*a))
+        T.Trainer.sample_sigmas = sample
+        try:
+            T._stop_requested = False
+            tr = T.Trainer(run_config(job, self.paths, os.path.join(self.tmp, "out_shifts"), os.path.join(self.tmp, "cache")))
+            tr.train()
+        finally:
+            T.log, T.Trainer.sample_sigmas = orig_log, orig_sample
+        self.assertEqual([l for l in lines if l.startswith("Flow shift from epoch")],
+                         ["Flow shift from epoch 1: 5", "Flow shift from epoch 2: 3", "Flow shift from epoch 3: 1"])
+        self.assertEqual(sorted(sigmas), [1, 3, 5], "each epoch sampled at its own shift")
+        g = torch.Generator().manual_seed(0)
+        tr.flow_shift_now = 5
+        high = tr.sample_sigmas(20000, g).mean()
+        tr.flow_shift_now = 1
+        self.assertGreater(float(high), float(tr.sample_sigmas(20000, g).mean()) + 0.2, "shift 5 trains noisier steps")
+
     def test_cosine_settle_schedule_in_a_run(self):
         out = os.path.join(self.tmp, "out_settle")
         job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}],

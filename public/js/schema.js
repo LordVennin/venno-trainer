@@ -263,6 +263,9 @@
     if (t.timestep === "moss_report" && !cleanShareValid(t.clean_end_share)) {
       issues.push({ level: "error", msg: `Clean-end share "${t.clean_end_share}" is not valid: give a share (40), share:epochs:share (75:5:40), share:epoch:share:epoch[:every] (60:7:30:8:3), or keyframes share@epoch with rising epochs (25@1, 30@6, 45@10).` });
     }
+    if (t.timestep !== "moss_report" && !flowShiftValid(t.flow_shift)) {
+      issues.push({ level: "error", msg: `Flow Shift "${t.flow_shift}" is not valid: give a number above 0 (5; 1 = no shift) or keyframes shift@epoch with rising epochs (5@1, 5@6, 2@10).` });
+    }
     if (t.lr_scheduler === "cosine_settle") {
       const first = Number(t.settle_first_epochs);
       if (!(Number.isInteger(first) && first >= 1)) issues.push({ level: "error", msg: "First Cycle Epochs must be a whole number of epochs, 1 or more." });
@@ -303,24 +306,34 @@
     return p.length === 3 && p.every((x) => Number.isFinite(x) && x >= 0) && p.some((x) => x > 0);
   }
 
+  // Keyframes "v@epoch, v@epoch, ...": values above 0 and up to `high`, whole epochs from 1, rising
+  function keyframesValid(s, high) {
+    const items = s.split(/[\s,;]+/).filter(Boolean);
+    let last = 0;
+    for (const item of items) {
+      const m = /^(\d+(?:\.\d+)?)@(\d+)$/.exec(item);
+      if (!m) return false;
+      const v = Number(m[1]);
+      const epoch = Number(m[2]);
+      if (!(v > 0 && v <= high) || epoch < 1 || epoch <= last) return false;
+      last = epoch;
+    }
+    return items.length > 0;
+  }
+
+  // Flow Shift: a number above 0 (blank = 1), or keyframes shift@epoch (trainer/venno/timesteps.py)
+  function flowShiftValid(spec) {
+    const s = String(spec ?? "").trim();
+    if (!s) return true;
+    if (s.includes("@")) return keyframesValid(s, 100);
+    return /^\d+(\.\d+)?$/.test(s) && Number(s) > 0;
+  }
+
   // Clean-end share: "", a share, A:N:B, A:H:B:E, A:H:B:E:R or keyframes share@epoch (trainer/venno/timesteps.py)
   function cleanShareValid(spec) {
     const s = String(spec ?? "").replace(/%/g, "").trim();
     if (!s) return true;
-    if (s.includes("@")) {
-      // keyframes share@epoch, epochs rising
-      const items = s.split(/[\s,;]+/).filter(Boolean);
-      let last = 0;
-      for (const item of items) {
-        const m = /^(\d+(?:\.\d+)?)@(\d+)$/.exec(item);
-        if (!m) return false;
-        const share = Number(m[1]);
-        const epoch = Number(m[2]);
-        if (!(share > 0 && share <= 100) || epoch < 1 || epoch <= last) return false;
-        last = epoch;
-      }
-      return items.length > 0;
-    }
+    if (s.includes("@")) return keyframesValid(s, 100);
     const p = s.split(":").map(Number);
     if (![1, 3, 4, 5].includes(p.length) || p.some((x) => !Number.isFinite(x))) return false;
     if (p.filter((_, i) => i % 2 === 0).some((x) => !(x > 0 && x <= 100))) return false;
@@ -344,6 +357,7 @@
     variantOf,
     textCached,
     cleanShareValid,
+    flowShiftValid,
     captionMixValid,
     parseIntList,
     repeatsFromFolderName,

@@ -173,3 +173,11 @@ test("clean-end share keyframes: share@epoch with rising epochs", () => {
   assert.match(S.validateJob(job)[0].msg, /keyframes share@epoch with rising epochs/);
 });
 
+test("flow shift: a number above 0 or keyframes shift@epoch; not checked under the MOSS report timesteps", () => {
+  for (const ok of [5, "5", "3.5", "", "5@1, 5@6, 2@10"]) assert.ok(S.flowShiftValid(ok), String(ok));
+  for (const bad of ["0", "-1", "abc", "5@6, 2@3", "0@2", "5@"]) assert.ok(!S.flowShiftValid(bad), bad);
+  const job = (t) => S.normalizeJob({ model: "moss_image", training: t, dataset: { folders: [{ ...S.defaultFolder(), path: "/d" }] } });
+  assert.match(S.validateJob(job({ timestep: "uniform", flow_shift: "5@6, 2@3" }))[0].msg, /Flow Shift "5@6, 2@3" is not valid/);
+  assert.deepStrictEqual(S.validateJob(job({ timestep: "moss_report", flow_shift: "abc" })), []);
+});
+
