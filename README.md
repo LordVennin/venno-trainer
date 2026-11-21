@@ -210,6 +210,10 @@ caption loads it again.
 
 ## Training, saving, resuming
 
+- **Prodigy** estimates its own step size: use Learning Rate 1 (the job editor refuses a small one,
+  which would leave the LoRA almost untouched). **Prodigy d_coef** (shown when Prodigy is picked)
+  scales its estimate: 1 as estimated, below 1 gentler, above 1 stronger. Bias correction is on by
+  default; anything in Extra Optimizer Args wins. The log prints Prodigy's step size each epoch.
 - Epoch or step schedules, AdamW / AdamW8bit / PagedAdamW8bit / Adafactor / Prodigy, constant /
   warmup / cosine / cosine-with-restarts / linear / polynomial schedules, gradient accumulation,
   logit-normal or uniform timesteps with a flow shift (Anima's default: logit-normal, shift 3, as in

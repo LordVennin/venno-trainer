@@ -181,3 +181,13 @@ test("flow shift: a number above 0 or keyframes shift@epoch; not checked under t
   assert.deepStrictEqual(S.validateJob(job({ timestep: "moss_report", flow_shift: "abc" })), []);
 });
 
+test("Prodigy needs a learning rate of about 1 (it multiplies Prodigy's own step size)", () => {
+  const job = (lr) => S.normalizeJob({ model: "moss_image", training: { optimizer: "Prodigy", lr }, dataset: { folders: [{ ...S.defaultFolder(), path: "/d" }] } });
+  assert.match(S.validateJob(job("8e-5"))[0].msg, /Prodigy finds its own step size/);
+  assert.deepStrictEqual(S.validateJob(job("1")), []);
+  assert.deepStrictEqual(S.validateJob(job("0.5")), []);
+  assert.strictEqual(S.defaultJob("moss_image").training.prodigy_d_coef, 1);
+  const coef = S.normalizeJob({ model: "moss_image", training: { optimizer: "Prodigy", lr: "1", prodigy_d_coef: 0 }, dataset: { folders: [{ ...S.defaultFolder(), path: "/d" }] } });
+  assert.match(S.validateJob(coef)[0].msg, /d_coef must be above 0/);
+});
+

@@ -19,6 +19,20 @@ def lam(name, total, warmup=0, **kw):
     return create_scheduler(name, opt, total, warmup, **kw).lr_lambdas[0]
 
 
+class ProdigyTests(unittest.TestCase):
+    def test_defaults_and_overrides(self):
+        from venno.optim import create_optimizer
+
+        p = [torch.nn.Parameter(torch.zeros(4))]
+        g = create_optimizer("Prodigy", p, 1.0, 0.01).param_groups[0]
+        self.assertEqual((g["lr"], g["use_bias_correction"], g["safeguard_warmup"], g["weight_decay"]), (1.0, True, False, 0.01))
+        self.assertEqual(g["d_coef"], 1.0)
+        g = create_optimizer("Prodigy", p, 1.0, 0, d_coef=2.0).param_groups[0]
+        self.assertEqual(g["d_coef"], 2.0, "the Training tab's d_coef")
+        g = create_optimizer("Prodigy", p, 1.0, 0, "use_bias_correction=False d_coef=3", d_coef=2.0).param_groups[0]
+        self.assertEqual((g["use_bias_correction"], g["d_coef"]), (False, 3), "Extra Optimizer Args win")
+
+
 class CosineSettleTests(unittest.TestCase):
     def test_matches_resuming_one_epoch_at_a_time(self):
         for warmup in (0, 20):

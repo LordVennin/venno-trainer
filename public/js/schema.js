@@ -108,6 +108,7 @@
         flow_shift: 3.0,
         clean_end_share: "", // MOSS report timesteps only; see trainer/venno/timesteps.py
         ema_decay: 0, // 0 = off
+        prodigy_d_coef: 1, // Prodigy: scales its estimated step size
         loss_type: "mse",
         gpu_ids: "0",
       },
@@ -265,6 +266,12 @@
     }
     if (t.timestep !== "moss_report" && !flowShiftValid(t.flow_shift)) {
       issues.push({ level: "error", msg: `Flow Shift "${t.flow_shift}" is not valid: give a number above 0 (5; 1 = no shift) or keyframes shift@epoch with rising epochs (5@1, 5@6, 2@10).` });
+    }
+    if (t.optimizer === "Prodigy" && !(Number(t.lr) >= 0.1)) {
+      issues.push({ level: "error", msg: `Prodigy finds its own step size and the Learning Rate multiplies it: set it to 1 (0.5–2 to scale), not ${t.lr}. At ${t.lr} the LoRA would barely change.` });
+    }
+    if (t.optimizer === "Prodigy" && !(Number(t.prodigy_d_coef) > 0)) {
+      issues.push({ level: "error", msg: "Prodigy's d_coef must be above 0 (1 = its own estimate)." });
     }
     if (t.lr_scheduler === "cosine_settle") {
       const first = Number(t.settle_first_epochs);

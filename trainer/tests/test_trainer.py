@@ -403,6 +403,28 @@ class MossTests(unittest.TestCase):
         tr.flow_shift_now = 1
         self.assertGreater(float(high), float(tr.sample_sigmas(20000, g).mean()) + 0.2, "shift 5 trains noisier steps")
 
+    def test_prodigy_run_logs_its_step_size(self):
+        job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}], duration_unit="epochs",
+                         max_epochs=2, save_every_epochs=10, optimizer="Prodigy", lr="1", lr_scheduler="cosine",
+                         output_name="prodigy", workers=1, ema_decay=0, prodigy_d_coef=2)
+        job["dataset"].update(resolutions="64", batch_sizes="1", min_bucket=32, max_bucket=128, bucket_steps=16)
+        job["network"].update(dim=4, alpha=4)
+        job["sampling"]["enabled"] = False
+        lines, orig_log = [], T.log
+        T.log = lambda *a: (lines.append(" ".join(map(str, a))), orig_log(*a))
+        try:
+            T._stop_requested = False
+            tr = T.Trainer(run_config(job, self.paths, os.path.join(self.tmp, "out_prodigy"), os.path.join(self.tmp, "cache")))
+            tr.train()
+        finally:
+            T.log = orig_log
+        logged = [l for l in lines if l.startswith("Prodigy at epoch")]
+        self.assertEqual([l.split(":")[0] for l in logged], ["Prodigy at epoch 1", "Prodigy at epoch 2"])
+        self.assertTrue(all(float(l.split("d = ")[1].split()[0]) > 0 for l in logged))
+        self.assertEqual(tr.optimizer.param_groups[0]["d_coef"], 2.0, "the job's d_coef reaches Prodigy")
+        ups = [l.lora_up.weight for l in tr.network.loras.values()]
+        self.assertGreater(max(float(u.abs().max()) for u in ups), 0, "the LoRA trained")
+
     def test_cosine_settle_schedule_in_a_run(self):
         out = os.path.join(self.tmp, "out_settle")
         job = F.base_job("moss_image", [{"path": os.path.join(self.tmp, "data", "a")}],

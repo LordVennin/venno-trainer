@@ -24,7 +24,7 @@ def parse_optimizer_args(text):
 OPTIMIZERS = ["AdamW8bit", "AdamW", "Adafactor", "Prodigy", "PagedAdamW8bit"]
 
 
-def create_optimizer(name, params, lr, weight_decay, extra_args=""):
+def create_optimizer(name, params, lr, weight_decay, extra_args="", d_coef=1.0):
     kwargs = {"weight_decay": float(weight_decay or 0)}
     kwargs.update(parse_optimizer_args(extra_args))
     key = name.lower()
@@ -50,6 +50,12 @@ def create_optimizer(name, params, lr, weight_decay, extra_args=""):
             from prodigyopt import Prodigy
         except ImportError as e:
             raise RuntimeError("Prodigy needs prodigyopt (pip install prodigyopt)") from e
+        # Prodigy estimates its own step size (d) and multiplies it by lr, so lr is ~1. Bias correction is the
+        # setting usually recommended for diffusion LoRAs; safeguard_warmup stays off (Prodigy's default): it is
+        # meant for runs with LR warmup, and together with bias correction it settled d ~3x lower in a test.
+        # Extra Optimizer Args win.
+        kwargs.setdefault("use_bias_correction", True)
+        kwargs.setdefault("d_coef", float(d_coef))  # scales the estimated step size (Training tab, d_coef)
         return Prodigy(params, lr=lr, **kwargs)
     raise ValueError(f"Unknown optimizer {name}; choose one of {', '.join(OPTIMIZERS)}")
 

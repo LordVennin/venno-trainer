@@ -347,6 +347,7 @@ class Trainer:
         self.optimizer = create_optimizer(
             self.t.get("optimizer", "AdamW8bit"), params, num(self.t.get("lr"), 1e-4),
             self.t.get("weight_decay"), self.t.get("optimizer_args", ""),
+            d_coef=num(self.t.get("prodigy_d_coef"), 1.0),
         )
         self.scheduler = create_scheduler(
             self.t.get("lr_scheduler", "constant"), self.optimizer, self.total_steps,
@@ -379,6 +380,13 @@ class Trainer:
             what = f"{share:g}% of steps at the clean end (noise below 50%)" if share is not None else \
                 f"the report's own schedule ({100 * TS.clean_share(TS.T_MU):.0f}% of steps at the clean end)"
             log(f"Timesteps from epoch {epoch + 1}: {what}" + (", at half the learning rate" if half else ""))
+
+    def log_prodigy(self, epoch):
+        """Prodigy's own step-size estimate at each epoch's start: it grows while the LoRA can take bigger steps,
+        and is multiplied by the learning rate (the multiplier) and the schedule."""
+        group = self.optimizer.param_groups[0]
+        if "d" in group and "d0" in group:
+            log(f"Prodigy at epoch {epoch + 1}: step size d = {group['d']:.3g} (x learning rate {group['lr']:.3g})")
 
     def averaged(self):
         """The EMA weights in place for a save or samples (or nothing to swap)."""
@@ -771,6 +779,7 @@ class Trainer:
         params = self.network.trainable_parameters()
         while step < self.total_steps and not _stop_requested:
             self.set_epoch(epoch)
+            self.log_prodigy(epoch)
             mid_epoch = step > epoch * self.steps_per_epoch
             if mid_epoch and self.resume_epoch_rng is not None:
                 # resumed mid-epoch: the epoch's own image order again, from the shuffle state it started with, so

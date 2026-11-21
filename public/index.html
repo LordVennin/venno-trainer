@@ -97,6 +97,12 @@
                             <div class="form-group">
                                 <label>Optimizer</label>
                                 <select data-bind="training.optimizer" data-options="optimizer"></select>
+                                <small data-show="training.optimizer=Prodigy">Prodigy works out its own step size: Learning Rate 1 (it multiplies that step). The log prints the step size each epoch. It keeps more optimizer state than AdamW8bit (the memory check includes it).</small>
+                            </div>
+                            <div class="form-group" data-show="training.optimizer=Prodigy">
+                                <label>Prodigy d_coef</label>
+                                <input type="number" data-bind="training.prodigy_d_coef" step="0.1" min="0">
+                                <small>Scales Prodigy's estimated step size: 1 = as estimated, 0.5 gentler, 2 stronger. <code>d_coef=</code> in Extra Optimizer Args overrides it.</small>
                             </div>
                         </div>
                         <div class="form-row">
